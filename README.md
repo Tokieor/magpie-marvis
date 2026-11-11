@@ -3,6 +3,19 @@
 > 非官方插件。Marvis 是腾讯的产品，本插件只是把它自己的模型网关接到 magpie 上，
 > 与腾讯无关。边界见下方「已知边界」。
 
+> **这是个人 fork**：派生自 [MYCF711/magpie-marvis](https://github.com/MYCF711/magpie-marvis)（MIT），
+> 由 [@Tokieor](https://github.com/Tokieor) 维护，**仅供自己使用**，不对外分发。
+> 与上游作者、与腾讯都没有隶属关系。
+>
+> 相对上游 `0.2.22` 的改动（本 fork 的 `0.2.23`）：
+>
+> | 改了什么 | 为什么 |
+> |---|---|
+> | `main-auto` 补 `vision: true` | 上游 `deepseek-v4-1-flash` 本来能识图，缺这个字段会被 magpie 在入口 400 掉（上游 issue #8） |
+> | `usage` 钩子改用 `import` 的 `fs` | 原来在 ESM 里调 `require`，ReferenceError 被自己的 `catch` 吞掉，诊断文件从来没写出来过 |
+> | 新增无浏览器登录（局域网扫码） | 插件在服务端申请二维码并自己长轮询，浏览器只显示页面、不碰回调地址 —— NAS / Docker 可用（上游 issue #4） |
+> | 新增 `MAGPIE_MARVIS_RELAY_PORT` / `MAGPIE_MARVIS_RELAY_URL` | 容器里探测到的是 `172.17.x`，局域网打不开，得能指定对外地址 |
+
 把**腾讯 Marvis**（应用宝 AI 助手）背后的模型接进 [magpie](https://usemagpie.ai) /
 OpenCode —— 不用 API key，用你的 **QQ 或微信** 登录。
 
@@ -66,8 +79,10 @@ Marvis 免费账号 **一个号每天 1000 万计费 token**（`total_tokens`）
 ## 装
 
 ```bash
-magpie plugin add MYCF711/magpie-marvis
+magpie plugin add Tokieor/magpie-marvis
 ```
+
+> 想用上游原版：`magpie plugin add MYCF711/magpie-marvis`（没有扫码登录，NAS 上会卡在「请装一个浏览器」）。
 
 装完在 magpie 设置里 **供应商 → 添加 → 腾讯 Marvis**，选登录方式：
 
@@ -141,6 +156,21 @@ ports:
 - **`/v1/chat/completions` 不需要 UAL 签名**：那是 `/v3/*` 业务接口的事。把签名头加到模型
   网关上会从 `403 风控` 变成 `401 登录态过期`。
 
+### 合规与风险（自己用之前先看一眼）
+
+- **未获授权**：插件走的是 Marvis 客户端用的**私有接口**（`yybadaccess.3g.qq.com`、
+  `ptlogin2.qq.com` 等），复用了官方的 `appid` / `client_id`，并在本地**伪造设备指纹**
+  （`uskey` 随机生成、`qimei36` 常为空）。这些都不是腾讯开放给你的接入方式。
+- **可能违反服务条款**：腾讯的《QQ 互联服务协议》《微信开放平台协议》《腾讯服务协议》都禁止
+  以非官方客户端方式访问、禁止绕过风控。实际后果通常落在**账号**上（限流、封号），
+  但公开分发有被投诉下架的可能。
+- **商标**：README、插件显示名（`magpie.name` = `腾讯 Marvis TENCENT`）里的「腾讯」「Marvis」
+  「TENCENT」只用来**说明兼容对象**，不代表腾讯认可、授权或背书。
+- **别公开分发**：想压低风险就把仓库设成私有。GitHub 的 fork **不能直接转私有** ——
+  要么新建一个私有仓库再 `git push`，要么删掉 fork。
+- **代码许可没问题**：代码是 MIT（见下方「许可」），可以自由 fork、修改、自用。
+  上面说的是**接口使用**和**商标**，跟代码许可无关。
+
 ## 开发
 
 ```bash
@@ -152,3 +182,9 @@ node tests/e2e-live.mjs     # 真实网关端到端（需要有效登录态）
 ## 许可
 
 MIT。详见 [LICENSE](./LICENSE)，归属说明见 [NOTICE.md](./NOTICE.md)。
+
+- 上游版权：Copyright (c) 2026 [MYCF711](https://github.com/MYCF711)，以及 `NOTICE.md` 里列出的各 MIT 项目作者
+- 本 fork 的修改：Copyright (c) 2026 [@Tokieor](https://github.com/Tokieor)
+
+> 上游 `LICENSE` 的版权行原本是模板占位符（`Copyright (c) 2026 YOUR NAME`）。
+> 本 fork 按 MIT 的要求补成了实际归属 —— MIT 允许你改，但**必须保留版权声明**。
