@@ -104,7 +104,11 @@ const TABLE = [
   //   kimi-k2.5（500 RPC）· hunyuan-2.0-instruct-20251111（空响应）· venus-vision-llm（→ default）
 
   // ── DeepSeek ────────────────────────────────────────────────
-  ["main-auto", "deepseek-v4-1-flash-261017", 1_000_000, { reasoning: true, tools: true }],
+  // ⚠ main-auto **必须**带 `vision: true`（issue #8）：上游这个槽位能识图，
+  //   漏了它 `staticModels()` 会写 `attachment:false`、`providerModels()` 会写
+  //   `capabilities.input.image:false`，magpie 在入口就把带图请求 400 掉，
+  //   用户看到的是「deepseek flash 用不了图片」——而上游其实 200。
+  ["main-auto", "deepseek-v4-1-flash-261017", 1_000_000, { reasoning: true, tools: true, vision: true }],
   ["deepseek-v4-pro-external", "deepseek-v4-pro-202606", 1_000_000, { reasoning: true, tools: true }],
   ["hy3-preview-agent", "deepseek-v4-flash-ga-260731", 1_000_000, { reasoning: true, tools: true }],
 

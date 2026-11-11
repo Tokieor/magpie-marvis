@@ -8,6 +8,9 @@
 //   它会拦下：缺 used、aside 带 amount/limit、时间不是 ISO —— 这五类写法不会抛错，
 //   只会让卡片显示「剩余额度未知」，而这个号在智能路由里等于不存在（HOOKS §三）。
 
+import { mkdirSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { usage as buildUsage, usageWindow } from "../quota.mjs"
 import { businessHeaders } from "../marvis/protocol.mjs"
 import { BASE } from "../context.mjs"
@@ -22,9 +25,9 @@ const fmt = (n) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("en-US
  */
 function recordFailure(err) {
   try {
-    const { mkdirSync, writeFileSync } = require("node:fs")
-    const { homedir } = require("node:os")
-    const { join } = require("node:path")
+    // ⚠ 这个文件是 `"type": "module"`：**没有** `require`。
+    //   以前这里写的是 `require("node:fs")` —— ReferenceError 被下面的 catch 吞掉，
+    //   于是这个诊断文件从来没写出来过（排查时白等）。必须用顶层 import。
     const dir = join(homedir(), ".cache", "magpie")
     mkdirSync(dir, { recursive: true })
     writeFileSync(

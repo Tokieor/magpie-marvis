@@ -23,6 +23,9 @@
 import { configHook } from "./src/hooks/config.mjs"
 import { authHooks } from "./src/auth.mjs"
 import { modelsHook } from "./src/hooks/models.mjs"
+import { localBrowserAvailable } from "./src/hooks/methods.mjs"
+import { authorizeUrl } from "./src/marvis/login.mjs"
+import { startRelayLogin } from "./src/marvis/relay.mjs"
 import { PROVIDER, PROVIDER_NAME, BASE_V1, staticModels, providerModels, DEFAULT_MODEL } from "./src/context.mjs"
 
 export const MarvisAuthPlugin = async (_input) => {
@@ -45,4 +48,8 @@ export const _internal = {
   staticModels,
   providerModels,
   DEFAULT_MODEL,
+  // 登录相关的纯函数 / 环境判断：测试要能确定性地断言，不能依赖「这台机器有没有浏览器」
+  authorizeUrl,
+  localBrowserAvailable,
+  startRelayLogin,
 }

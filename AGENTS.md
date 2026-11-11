@@ -198,6 +198,7 @@ node scripts/probe-vision.mjs <provider/model> …
 | [`src/rotation-captcha.mjs`](./src/rotation-captcha.mjs) | `encodeAngle` / `createRotationCaptcha` / `solveRotationCaptcha` / `createCookieJar` | 「旋转图片对正」的验证码：角度编码是从前端反出来的（实测 4 组提交正向穷举唯一命中）；`acw_tc` WAF cookie 不带回去会回「客户端信息不匹配」；判角不可信要换图而不是硬撞 |
 | [`src/vision-clock.mjs`](./src/vision-clock.mjs) | `readVisionModel` / `decideDegFromImage` / `clockToDeg` / `clockSpread` | 用用户自己在 magpie 里选的识图模型判「主体朝几点」；两个判官并行 + 分歧阈值；`max_tokens` 是给推理留的（400 会饿死答案） |
 | [`src/local-browser.mjs`](./src/local-browser.mjs) | `readLocalCreds` / `credsNear` / `leveldbText` | 用户在自己浏览器里登录过时，直接读 localStorage 的 leveldb —— 不开窗、不弹浏览器；跨 origin 必须截断，否则 A 站 jwt 会配到 B 站 org |
+| [`src/marvis/relay.mjs`](./src/marvis/relay.mjs) | `startRelayLogin` / `hash33` / `parseWxPoll` / `parsePtuiCB` / `lanAddresses` | 本机**没有**浏览器时（NAS / Docker / 远程访问）的登录路：插件在服务端申请二维码（微信 uuid / QQ qrsig）并自己长轮询，用户的浏览器只显示页面 —— **绝不碰回调地址**，浏览器一旦真去请求回调，code 立刻作废（-107）。页面地址带一次性 token，否则同局域网的人扫码等于把他的号绑到你的 magpie 上 |
 | [`src/browser-login.mjs`](./src/browser-login.mjs) | `browserCandidates` / `findBrowser` / `chromiumLogin` / `selectCookies` | 需要用户在网页里登录时，开一个一次性 Chromium profile 从 CDP 取 Cookie；国产浏览器也要覆盖，Windows 注册表 App Paths 优先 |
 | [`src/tempmail-client.mjs`](./src/tempmail-client.mjs) | `createTempMailbox` / `waitTempCode` | 邮箱验证码自动登录的一次性地址；域名有黑名单（`maxxspace.com` 被 magicrew 拒），换厂商先用真实请求确认 |
 | [`tests/semantics.test.mjs`](./tests/semantics.test.mjs) | 语义锁（含额度窗口 / accountId 规则） | `check.mjs` 查不到的那部分，只有它能拦 |

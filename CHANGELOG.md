@@ -1,5 +1,24 @@
 # 更新记录
 
+## 0.2.23 — 2026-11-11
+
+**修复（NAS / 无浏览器环境登录）+ 两处旧 bug**
+
+- 新增**局域网扫码登录**（`src/marvis/relay.mjs`）：插件在本机临时起一个网页，用户用自己的
+- 容器（Docker / 飞牛 / 群晖）里登录：新增 `MAGPIE_MARVIS_RELAY_PORT` / `MAGPIE_MARVIS_RELAY_URL`，
+  固定监听端口并把「外面该打开哪个地址」交给用户指定 —— 否则容器里探测到的是 `172.17.x`，局域网打不开
+  浏览器打开、手机扫码；二维码的 uuid/qrsig 由插件在服务端申请并长轮询，浏览器全程不碰回调地址。
+  跑 magpie 的机器**不需要**任何浏览器 —— NAS / Docker / 群晖 / 飞牛 都能登录
+- 本机找不到 Chromium 时，「QQ 登录」「微信登录」自动改走扫码路，不再报「请装一个浏览器」
+- 新增两个显式方法「微信扫码登录（手机扫，NAS / 远程推荐）」「QQ 扫码登录（手机扫，NAS / 远程推荐）」，
+  远程访问 magpie（桌面窗口开在服务器上、用户看不见）时手选这两条
+- `main-auto` 补上 `vision: true`：之前漏了它，magpie 在入口就把带图请求 400 掉，
+  上游其实能识图（issue #8）
+- `usage` 的诊断文件改用顶层 `import`：原来在 ESM 里写 `require("node:fs")`，
+  ReferenceError 被 catch 吞掉，`~/.cache/magpie/marvis-wallet-error.json` 从来没写出来过
+- 验收：全量 124 项中 120 通过、4 项因未注入 live 凭据跳过；`check.mjs` 42 项全过；
+  微信 / QQ 二维码通道对真实上游实测（页面 200、二维码 46KB JPEG / 442B PNG、状态 waiting）
+
 > 每个版本一节，**一条一行**，说用户能感知的变化。
 > 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 

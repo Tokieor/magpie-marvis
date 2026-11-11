@@ -114,23 +114,61 @@ test("authorize 是 async 函数，且立刻返回（不 await 登录）", async
     assert.equal(typeof method.authorize, "function")
     assert.equal(method.authorize.constructor.name, "AsyncFunction")
   }
-  // 铁律 2：authorize 必须立刻返回一个带 callback 的 flow（不碰网络）
+  // 铁律 2：authorize 必须立刻返回一个带 callback 的 flow（不碰网络、不等用户）
   const started = Date.now()
   const flow = await plugin.auth.methods[0].authorize(undefined)
-  assert.ok(Date.now() - started < 1_000, "authorize 不能阻塞")
+  // 没有浏览器时这条路会先 listen 一个本地端口再返回（毫秒级），给一点余量
+  assert.ok(Date.now() - started < 2_000, "authorize 不能阻塞")
   assert.equal(typeof flow.callback, "function")
   assert.equal(typeof flow.url, "string")
-  assert.match(flow.url, /^https:\/\/(graph\.qq\.com|open\.weixin\.qq\.com)\//)
+  assert.ok(flow.url.length > 0, "flow.url 不能为空")
+  flow.close?.()
 })
 
-test("授权 URL 带对的 appid 与 redirect_uri", async () => {
-  const plugin = await MarvisAuthPlugin({})
-  const qq = await plugin.auth.methods[0].authorize(undefined)
-  assert.match(qq.url, /client_id=1903794758/)
-  assert.match(qq.url, /redirect_uri=https%3A%2F%2Fyybadaccess\.3g\.qq\.com%2Fmarvis_client_login%2Fmarvis_oauth/)
+test("授权 URL 带对的 appid 与 redirect_uri", () => {
+  // 直接测纯函数：不依赖这台机器有没有浏览器（有浏览器时 authorize 给的是授权页，
+  // 没有时给的是局域网扫码页 —— 两者 url 形状不同，断言 authorize 的 url 会 flaky）
+  const qq = _internal.authorizeUrl("QC", "0123456789abcdef0123456789abcdef")
+  assert.match(qq, /client_id=1903794758/)
+  assert.match(
+    qq,
+    /redirect_uri=https%3A%2F%2Fyybadaccess\.3g\.qq\.com%2Fmarvis_client_login%2Fmarvis_oauth/,
+  )
 
-  const wx = await plugin.auth.methods[1].authorize(undefined)
-  assert.match(wx.url, /appid=wxb650708317d56f88/)
+  const wx = _internal.authorizeUrl("WX", "0123456789abcdef0123456789abcdef")
+  assert.match(wx, /appid=wxb650708317d56f88/)
+  // 微信的 state 就是 guid（回调里能靠它找回 guid）
+  assert.match(wx, /state=0123456789abcdef0123456789abcdef/)
+})
+
+test("没有浏览器时 QQ/微信登录自动改走局域网扫码，而不是报「请装浏览器」", async (t) => {
+  if (_internal.localBrowserAvailable()) {
+    t.skip("这台机器有 Chromium，走的是浏览器路")
+    return
+  }
+  const plugin = await MarvisAuthPlugin({})
+  for (const method of plugin.auth.methods.slice(0, 2)) {
+    const flow = await method.authorize(undefined)
+    // 给用户的是**局域网页面**，不是 QQ/微信的授权页
+    assert.match(flow.url, /^http:\/\/\d+\.\d+\.\d+\.\d+:\d+\/s\/[0-9a-f]{16}\/$/)
+    // opened:false —— 要让 magpie 把这个地址交给用户那台机器打开
+    assert.equal(flow.opened, false)
+    assert.ok(flow.instructions.includes(flow.url), "说明里必须带这个地址，用户要能复制")
+    flow.close?.()
+  }
+})
+
+test("局域网扫码是显式的两个方法（远程访问时手选）", async () => {
+  const plugin = await MarvisAuthPlugin({})
+  const labels = plugin.auth.methods.map((m) => m.label)
+  assert.ok(
+    labels.some((l) => /微信扫码/.test(l)),
+    `方法列表里要有微信扫码：${labels.join(" / ")}`,
+  )
+  assert.ok(
+    labels.some((l) => /QQ 扫码/.test(l)),
+    `方法列表里要有 QQ 扫码：${labels.join(" / ")}`,
+  )
 })
 
 test("loader() 给 baseURL / apiKey / fetch；未登录返回空对象", async () => {

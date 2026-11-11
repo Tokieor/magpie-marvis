@@ -1,4 +1,4 @@
-// ② auth.methods —— 两条登录路
+// ② auth.methods —— 三条登录路
 //
 //   A. QQ / 微信 授权：自己起一个**隔离浏览器**（一次性 profile、伪装客户端 UA、
 //      抹掉 navigator.webdriver），用户在窗口里授权，插件在 CDP 的**请求阶段**拦下回调，
@@ -8,6 +8,15 @@
 //
 //   B. 从本机 Marvis 导入：装了客户端且登录过的人，直接读进程内存里的登录态。
 //      → 同样 `opened: true` + `method: "auto"`，整个登录就是「点一下 → 读内存 → 成功」。
+//
+//   C. 局域网扫码（`src/marvis/relay.mjs`）：本机**没有**浏览器时（NAS / Docker /
+//      纯命令行 / 远程访问）用。插件在本机起一个临时 HTTP 页面，用户用**自己的**浏览器
+//      打开它、手机扫码；二维码的 uuid/qrsig 由插件在服务端申请并长轮询，
+//      **浏览器全程不碰回调地址**，所以 code 不会被消费。
+//      → `{ url: <局域网页面>, opened: false, method: "auto", callback }`
+//        `opened: false` 是故意的：要让 magpie 把这个地址交给**用户那台**机器打开。
+//      A 与 C 用同一套 `authOf()` / `withProfile()`，只有「怎么拿到回调」不同。
+//      没有浏览器时 A 会自动改走 C（用户点同一个按钮，不报「请装浏览器」）。
 //
 // ⚠ `authorize()` 必须**立刻**返回 —— 真正等用户的是 `callback()`。
 //   在这里 await 登录会和 magpie 双向死锁（HOOKS §四·陷阱1）。
@@ -27,6 +36,7 @@ import { PROVIDER, LOGIN_TYPE } from "../context.mjs"
 import { authorizeUrl, parseCallback, deviceGuid } from "../marvis/login.mjs"
 import { createDeviceRegistry, newDeviceGuid, stateOfUrl } from "../marvis/device.mjs"
 import { openIsolatedLogin, findBrowser } from "../marvis/browser.mjs"
+import { startRelayLogin } from "../marvis/relay.mjs"
 import { resolveAccount } from "../account-name.mjs"
 import { importFromDesktop, desktopAvailable } from "../marvis/desktop.mjs"
 import { fetchUserProfile, accountLabel } from "../marvis/profile.mjs"
@@ -110,6 +120,93 @@ async function withProfile(acct, loginType) {
   }
 }
 
+/**
+ * 本机有没有可用的 Chromium 内核浏览器。
+ *
+ * 这个判断决定「浏览器路」还是「局域网扫码路」：
+ *   · Windows / macOS 桌面：有浏览器 → 老路子（起隔离窗口，CDP 拦回调）
+ *   · NAS / Docker / 纯命令行：没有 → 走 `relay.mjs`（用户自己的浏览器扫码，服务端拿 code）
+ *
+ * `findBrowser()` 自己带缓存，第二次调用几乎零成本；异常一律当「没有」。
+ *
+ * @returns {boolean}
+ */
+export function localBrowserAvailable() {
+  try {
+    return findBrowser() !== null
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 局域网扫码登录的 `authorize` 载荷。
+ *
+ * 和浏览器路共用 `withProfile()` / `authOf()`，只有「怎么拿到回调」这一段不同：
+ * 这里等的是 `relay.waitForCode()`（服务端长轮询拿到的 code），
+ * 而不是 CDP 在请求阶段拦下来的地址。
+ *
+ * @param {"QC" | "WX"} loginType
+ * @param {string} guid
+ * @param {string} authUrl 授权页地址（`authorizeUrl()` 的产物）
+ * @param {string} [hint] 追加到说明末尾的一句话（例如「你是远程访问，所以走这条路」）
+ */
+async function relayAuthorize(loginType, guid, authUrl, hint) {
+  // ⚠ 只等 listen，不等网络：二维码在后台申请，页面先显示「正在生成…」
+  const relay = await startRelayLogin({ loginType, authUrl, guid })
+
+  const instructions =
+    "1) 在浏览器打开下面这个地址（和 magpie 在同一局域网即可，手机、电脑都行）\n" +
+    `   ${relay.url}\n` +
+    `2) 用${loginType === "WX" ? "微信" : "手机 QQ"}扫码，并在手机上确认登录\n` +
+    "3) 页面显示「登录成功」后回到 magpie 即可\n" +
+    (hint ? `\n${hint}\n` : "") +
+    "\n打不开这个地址：多半是端口被防火墙拦了，或 magpie 跑在容器里没把端口映射出来。\n" +
+    "容器里的办法：给 magpie 加两个环境变量 ——\n" +
+    "   MAGPIE_MARVIS_RELAY_PORT=18080   （固定端口，方便只映射这一个）\n" +
+    "   MAGPIE_MARVIS_RELAY_URL=http://192.168.5.9:18080   （外面实际能打开的地址）\n" +
+    "然后重新点一次登录。Windows 且装了 Marvis 客户端的，也可以改用「从本机 Marvis 导入」。"
+
+  return {
+    // 给用户那台机器打开的地址（不是授权页）：opened:false 让 magpie 去开它
+    url: relay.url,
+    opened: false,
+    method: "auto",
+    instructions,
+    // 用户放弃 / 宿主提前收摊时能立刻关掉端口（magpie 不会调它，测试与诊断会）
+    close: () => relay.close(),
+    async callback(_url, _input, signal) {
+      try {
+        const got = await relay.waitForCode({ signal })
+        // got 可能是完整回调地址（QQ），也可能是裸 code（微信）
+        let acct = await parseCallback(got, "", { loginType, guid })
+        acct = await withProfile({ ...acct, guid }, loginType)
+        return authOf({ ...acct, guid, loginType: acct.loginType ?? LOGIN_TYPE[loginType] ?? "1" })
+      } catch (err) {
+        const msg = String(/** @type {any} */ (err)?.message ?? err)
+        const paramHint = /-109|RC_PARAMS_INVALID/.test(msg) ? PARAM_HINT : ""
+        throw new Error(msg + paramHint)
+      } finally {
+        relay.close()
+      }
+    },
+  }
+}
+
+/** 显式的「局域网扫码」登录方式（不依赖本机有没有浏览器） */
+function relayLogin(loginType, label, hint) {
+  return {
+    type: "oauth",
+    label,
+    async authorize() {
+      const guid = newDeviceGuid()
+      const url = authorizeUrl(loginType, guid)
+      pendingDevices.remember(stateOfUrl(url) || guid, guid)
+      return relayAuthorize(loginType, guid, url, hint)
+    },
+  }
+}
+
 /** 授权页登录（QQ / 微信），走隔离浏览器 */
 function oauthLogin(loginType, label, instructions) {  return {
     type: "oauth",
@@ -122,6 +219,11 @@ function oauthLogin(loginType, label, instructions) {  return {
       const state = stateOfUrl(url) || guid
       pendingDevices.remember(state, guid)
 
+      // 本机没有浏览器（NAS / Docker / 纯命令行）→ 自动改走局域网扫码，
+      // 别让用户卡在「请装一个 Chromium」上（issue #4）。这里**不抛错**：
+      // 用户点的是同一个「QQ 登录」，只是后面等他的是手机扫码而不是桌面窗口。
+      if (!localBrowserAvailable()) return relayAuthorize(loginType, guid, url)
+
       return {
         url,
         // 我们自己开隔离浏览器，magpie 不要再开系统默认浏览器
@@ -131,9 +233,13 @@ function oauthLogin(loginType, label, instructions) {  return {
         async callback(_url, _input, signal) {
           const browser = findBrowser()
           if (!browser) {
+            // 正常不会走到这里：`authorize()` 已经用 `localBrowserAvailable()` 分流过。
+            // 真走到说明浏览器在两次调用之间消失了（或首次判断被缓存成有），给一条能自救的话。
             throw new Error(
-              "没有找到可用的 Chromium 内核浏览器（Chrome / Edge / 360 / QQ 浏览器都行）。" +
-                "请装一个，或改用「从本机 Marvis 导入」。",
+              "这台机器上没有可用的 Chromium 内核浏览器（Chrome / Edge / 360 / QQ 浏览器都行）。" +
+                "如果你是从**另一台设备**访问 magpie 的，请改用「微信扫码登录（手机扫，NAS / 远程推荐）」" +
+                "或「QQ 扫码登录（手机扫，NAS / 远程推荐）」—— 那两条只要手机能扫码就行；" +
+                "Windows 且装了 Marvis 客户端的话，也可以用「从本机 Marvis 导入」。",
             )
           }
 
@@ -191,6 +297,19 @@ export function methods() {
       "1) 会打开一个**独立的**浏览器窗口（不碰你日常浏览器）\n" +
         "2) 用微信扫码并确认\n" +
         "3) 授权完成后窗口会自己关掉，回到 magpie 即可",
+    ),
+    // 显式两条「局域网扫码」：本机没浏览器时会自动走到它们，但**远程访问**（magpie 跑在
+    // 另一台机器上、你从笔记本访问）时自动判断看不出来 —— 桌面窗口开在服务器上，用户看不见。
+    // 所以留两个手选入口。
+    relayLogin(
+      "WX",
+      "微信扫码登录（手机扫，NAS / 远程推荐）",
+      "你是从另一台设备访问 magpie 的，所以这条路不需要这台机器上有浏览器。",
+    ),
+    relayLogin(
+      "QC",
+      "QQ 扫码登录（手机扫，NAS / 远程推荐）",
+      "你是从另一台设备访问 magpie 的，所以这条路不需要这台机器上有浏览器。",
     ),
     {
       type: "oauth",
