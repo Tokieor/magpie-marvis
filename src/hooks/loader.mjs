@@ -110,8 +110,13 @@ export function loaderHook() {
         let headers
         try {
           headers = llmHeaders(creds, {
-            scene: "preload_summary",
-            agentTag: "auto_discovery",
+            // ⚠ `Marvis-Scene` 是上游的**准入闸门**，不是随便填的元数据：
+            //   `preload_summary` / `prefill_supplement` / `agent` 这几个场景
+            //   只放行腾讯自家的 deepseek / hunyuan，claude / gpt 一律回
+            //   `4130001 无效模型id`（看起来像模型不存在，其实是场景不放行）。
+            //   实测只有 `chat` 场景能过全部 8 个槽位，所以固定用 `chat`。
+            scene: "chat",
+            agentTag: "main_agent",
           })
         } catch (err) {
           return errorResponse(
@@ -207,7 +212,14 @@ export function loaderHook() {
         }
         if (MODEL_ISSUE.test(text) || response.status === 404) {
           // 模型级错误 → 404，只搁置这个模型，不打死账号（AGENTS 坑 6）
-          return errorResponse(404, "model_unavailable", `该模型在当前账号不可用：${text.slice(0, 300)}`)
+          // 4130001 有两种含义，别一口咬定「模型下线」把人带偏：
+          //   ① 槽位名写错/已下线  ② 场景不放行（同一个 id 在别的 Marvis-Scene 下能过）
+          const hint = /4130001/.test(text) ? "（模型 id 无效，或当前场景/账号不放行）" : ""
+          return errorResponse(
+            404,
+            "model_unavailable",
+            `该模型在当前账号不可用${hint}：${text.slice(0, 300)}`,
+          )
         }
         // 其余原样透出
         return new Response(text || null, {

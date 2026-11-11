@@ -7,6 +7,29 @@
 
 # 更新记录
 
+## 0.2.27 — 2026-11-11
+
+**修复：claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4 三个模型永远回「该模型在当前账号不可用」**
+
+根因不是模型下线，是 `Marvis-Scene` 请求头 —— 它是上游的**准入闸门**，不是随便填的元数据：
+
+| Marvis-Scene | deepseek / hunyuan | claude / gpt |
+| --- | --- | --- |
+| `preload_summary`（插件原来用的） | 200 | **400 `4130001 无效模型id`** |
+| `chat` | 200 | 200 |
+
+同一个 model id、同一个账号、同一秒，只换场景就从 400 变 200。看起来像「模型不存在」，
+其实是场景不放行 —— 上游把两种情况用了同一个错误码，特别容易查错方向。
+现在固定发 `scene: "chat"`（这才是补全请求该有的场景），8 个槽位全部 200。
+
+- `src/hooks/loader.mjs`：`Marvis-Scene` 改成 `chat`、`Marvis-AgentTag` 改成 `main_agent`
+- `src/marvis/protocol.mjs`：`llmHeaders` 的默认 scene 同步改成 `chat`
+- 4130001 的报错文案补一句「（模型 id 无效，或当前场景/账号不放行）」，
+  别一口咬定是模型下线
+- 新增回归测试：断言 loader 发出去的 `Marvis-Scene` 必须是 `chat`
+
+附带验证（真账号直连上游）：8 个槽位全部 200；stream / tools / vision 都通
+（`claude-sonnet-4-6` 识图答「红色」，`main-auto` 不再被入口 400 拦掉）。
 ## 0.2.26 — 2026-11-11
 
 **修复 QQ 扫码后卡在「请在浏览器中完成腾讯 Marvis 登录」** —— 三个连环坑，都在 `src/marvis/relay.mjs`：

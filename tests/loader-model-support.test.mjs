@@ -263,3 +263,23 @@ test("上游 5104002 RPC 500 原样透出（不全局映射成 404）", async ()
     s.restore()
   }
 })
+// `Marvis-Scene` 是上游的准入闸门，不是随便填的元数据。
+// 事故现场：claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4 三个槽位在
+// `preload_summary` 场景下稳定回 `4130001 无效模型id`（看着像模型没了，
+// 其实是场景不放行），而 deepseek / hunyuan 正常。实测只有 `chat` 能过全部 8 个槽位。
+test("loader 发出去的 Marvis-Scene 必须是 chat（否则 claude / gpt 全被误判成模型不存在）", async () => {
+  const s = stubFetch(() => new Response("{}", { status: 200 }))
+  try {
+    const describe = await loaderOf()
+    await describe.fetch(CHAT_URL, {
+      method: "POST",
+      body: JSON.stringify({ model: "claude-sonnet-4-6", messages: [] }),
+    })
+    assert.equal(s.calls.length, 1)
+    const h = s.calls[0].init.headers
+    assert.equal(h["Marvis-Scene"], "chat", "场景必须是 chat，不能是 preload_summary")
+    assert.equal(h["Marvis-AgentTag"], "main_agent")
+  } finally {
+    s.restore()
+  }
+})

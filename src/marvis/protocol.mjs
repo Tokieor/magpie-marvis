@@ -68,7 +68,7 @@ export function llmHeaders(acct, opts = {}) {
     "Marvis-AgentTag": opts.agentTag ?? "auto_discovery",
     "Marvis-Conversation-ID": opts.conversationId ?? "",
     "Marvis-Response-ID": opts.responseId ?? "",
-    "Marvis-Scene": opts.scene ?? "preload_summary",
+    "Marvis-Scene": opts.scene ?? "chat",
     "Marvis-Protocol-Version": "1000",
     "X-Device-GUID": acct.guid ?? "",
     "Ual-Access-MarvisExt": ext,
