@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict"
 import test from "node:test"
+import { createServer } from "node:http"
 
 import {
   hash33,
@@ -320,5 +321,73 @@ test("port 参数能固定监听端口（容器映射用）", async () => {
     assert.equal(relay.url, `http://127.0.0.1:${relay.port}/s/${relay.url.split("/s/")[1]}`)
   } finally {
     relay.close()
+  }
+})
+
+/** 先占一个空闲端口号再放掉，用来测「同一个端口反复绑定」 */
+async function freePort() {
+  const srv = createServer()
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r))
+  const port = /** @type {any} */ (srv.address()).port
+  await new Promise((r) => srv.close(r))
+  return port
+}
+
+const qc = (port) => ({
+  loginType: /** @type {const} */ ("QC"),
+  authUrl: "https://graph.qq.com/oauth2.0/authorize?client_id=1903794758",
+  guid: "0123456789abcdef0123456789abcdef",
+  fetchImpl: waitingFetch,
+  ifaces: loopback,
+  timeoutMs: 5_000,
+  port,
+})
+
+// 用户实测的 bug：扫错号 → 在 magpie 里点取消 → 再点登录，报
+// "Failed to start server. Is port 18080 in use?"
+// 根因：close() 只调了 server.close()，浏览器那条 keep-alive 连接还挂着，端口没放。
+test("取消之后再点一次登录：端口能立刻重新绑上", async () => {
+  const port = await freePort()
+  const ac = new AbortController()
+
+  const first = await startRelayLogin(qc(port))
+  const waiting = first.waitForCode({ signal: ac.signal }).catch((e) => e)
+  // 模拟用户浏览器打开扫码页（keep-alive 连接留在服务端）
+  assert.equal((await fetch(first.url)).status, 200)
+
+  ac.abort() // = 用户在 magpie 里点「取消」
+  const err = await waiting
+  assert.match(String(/** @type {any} */ (err)?.message ?? err), /取消/)
+
+  // 关键断言：同一个端口立刻还能绑上，不能报 EADDRINUSE
+  const second = await startRelayLogin(qc(port))
+  try {
+    assert.equal((await fetch(second.url)).status, 200)
+  } finally {
+    second.close()
+  }
+})
+
+test("上一次扫码页没关就再点一次：新的顶掉旧的，不会报端口占用", async () => {
+  const port = await freePort()
+  const first = await startRelayLogin(qc(port))
+  first.waitForCode().catch(() => {})
+  const second = await startRelayLogin(qc(port))
+  try {
+    assert.equal((await fetch(second.url)).status, 200)
+  } finally {
+    second.close()
+    first.close()
+  }
+})
+
+test("端口被别的程序占着：报能看懂的错，而不是底层 EADDRINUSE", async () => {
+  const port = await freePort()
+  const blocker = createServer((_req, res) => res.end("x"))
+  await new Promise((r) => blocker.listen(port, "127.0.0.1", r))
+  try {
+    await assert.rejects(startRelayLogin(qc(port)), /被占用/)
+  } finally {
+    await new Promise((r) => blocker.close(r))
   }
 })

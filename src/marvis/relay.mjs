@@ -349,6 +349,16 @@ function pageHtml({ title, tip, token }) {
 }
 
 /**
+ * 上一次没关干净的扫码页的 close 函数。
+ *
+ * 扫码页是**单例资源**（固定端口 + 一个临时 HTTP 服务），不是按账号的状态，
+ * 所以放在模块级是安全的：同一时刻只该有一个扫码页在跑，新的登录直接顶掉旧的。
+ * 用户取消登录时宿主不一定会通知插件（magpie 只 abort callback 的 signal），
+ * 靠「下一次登录先关掉上一次」兜底，才不会被 5 分钟超时卡住端口。
+ */
+let activeClose = null
+
+/**
  * 起一个「局域网扫码登录」。
  *
  * 返回得很早：只等服务**开始 listen**，二维码在后台申请（页面先显示「正在生成…」）。
@@ -377,6 +387,8 @@ export async function startRelayLogin(o) {
   const timeoutMs = o.timeoutMs ?? RELAY_TIMEOUT_MS
   const token = randomBytes(8).toString("hex")
   const base = `/s/${token}/`
+  /** @type {Set<any>} */
+  const sockets = new Set()
 
   /** @type {{ status: string, message: string, qr: number, code: string }} */
   const st = { status: "waiting", message: "", qr: 0, code: "", reach: "" }
@@ -431,12 +443,72 @@ export async function startRelayLogin(o) {
   // 端口默认随机。跑在容器里时随机端口外面映射不进来，所以允许用
   // MAGPIE_MARVIS_RELAY_PORT 固定一个端口，再在容器上映射它。
   const wantPort = Number(o.port ?? process.env.MAGPIE_MARVIS_RELAY_PORT ?? 0)
-  await new Promise((res, rej) => {
-    server.once("error", rej)
-    const listenPort = Number.isInteger(wantPort) && wantPort > 0 && wantPort < 65_536 ? wantPort : 0
-    server.listen(listenPort, o.host ?? "0.0.0.0", () => res(null))
+  const listenPort = Number.isInteger(wantPort) && wantPort > 0 && wantPort < 65_536 ? wantPort : 0
+  const bindHost = o.host ?? "0.0.0.0"
+
+  // 先关掉上一次（用户取消后宿主通常不会通知插件，这里兜底），再绑端口。
+  // 上一次的连接是 keep-alive 的，光 close 端口还占着，所以等一下再绑。
+  if (activeClose) {
+    try {
+      activeClose()
+    } catch {
+      /* 已经不在了 */
+    }
+    activeClose = null
+    await new Promise((r) => setTimeout(r, 80))
+  }
+
+  /** 绑一次端口；失败时 reject 原始错误（交给外面判断是不是 EADDRINUSE） */
+  function bindOnce() {
+    return new Promise((res, rej) => {
+      const onError = (err) => {
+        server.removeListener("listening", onListening)
+        rej(err)
+      }
+      const onListening = () => {
+        server.removeListener("error", onError)
+        res(null)
+      }
+      server.once("error", onError)
+      server.once("listening", onListening)
+      server.listen(listenPort, bindHost)
+    })
+  }
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await bindOnce()
+      break
+    } catch (err) {
+      const code = /** @type {any} */ (err)?.code
+      // 端口被占：多半是上一次的扫码页还没收干净（keep-alive 连接）。重试几次。
+      if (code === "EADDRINUSE" && attempt < 4) {
+        if (activeClose) {
+          try {
+            activeClose()
+          } catch {
+            /* ignore */
+          }
+          activeClose = null
+        }
+        await new Promise((r) => setTimeout(r, 250))
+        continue
+      }
+      throw new Error(
+        code === "EADDRINUSE"
+          ? `扫码页的端口 ${listenPort} 被占用了（上一次的扫码页还没关干净，或者别的程序占着它）。` +
+              "等两三秒再点一次登录；如果一直这样，把 MAGPIE_MARVIS_RELAY_PORT 换成一个空闲端口，" +
+              "并同步改容器映射和 MAGPIE_MARVIS_RELAY_URL。"
+          : `扫码页起不来：${/** @type {any} */ (err)?.message ?? err}`,
+      )
+    }
+  }
+  server.on("connection", (socket) => {
+    sockets.add(socket)
+    socket.on("close", () => sockets.delete(socket))
   })
   server.unref?.()
+  activeClose = close
   const port = /** @type {any} */ (server.address()).port
   const address = lanAddresses(o.ifaces)[0]?.address ?? "127.0.0.1"
   // 容器里探测到的地址（172.17.x / 容器内网卡）局域网是访问不到的，
@@ -487,11 +559,34 @@ export async function startRelayLogin(o) {
       : qqSession({ authUrl: o.authUrl, fetchImpl })
   }
 
-  function close() {
+  /**
+   * 关掉扫码页。
+   *
+   * ⚠ 只 `server.close()` 是不够的：它只停止接受**新**连接，已经建立的
+   * keep-alive 连接（用户浏览器每 1.2 秒轮询一次 /status）会一直挂着，
+   * 端口就还占着 —— 表现就是「取消之后再点登录 → 端口 18080 被占用」。
+   * 所以这里必须把已建立的 socket 全部 destroy 掉。
+   */
+  function close(reason = "") {
     if (closed) return
     closed = true
     clearTimeout(timer)
     ac.abort()
+    if (reason && st.status !== "done" && st.status !== "timeout") st.status = reason
+    if (activeClose === close) activeClose = null
+    for (const socket of sockets) {
+      try {
+        socket.destroy()
+      } catch {
+        /* 已经断了 */
+      }
+    }
+    sockets.clear()
+    try {
+      server.closeAllConnections?.()
+    } catch {
+      /* 老运行时没有这个 API */
+    }
     try {
       server.close()
     } catch {

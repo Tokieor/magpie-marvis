@@ -177,8 +177,11 @@ async function relayAuthorize(loginType, guid, authUrl, hint) {
     method: "auto",
     instructions,
     // 用户放弃 / 宿主提前收摊时能立刻关掉端口（magpie 不会调它，测试与诊断会）
-    close: () => relay.close(),
+    close: () => relay.close("cancelled"),
     async callback(_url, _input, signal) {
+      // 用户在 magpie 里点「取消」= 宿主 abort 这个 signal。
+      // 不在这里收摊的话，端口会一直占着，下一次点登录就是「端口 18080 被占用」。
+      signal?.addEventListener?.("abort", () => relay.close("cancelled"), { once: true })
       try {
         const got = await relay.waitForCode({ signal })
         // got 可能是完整回调地址（QQ），也可能是裸 code（微信）
