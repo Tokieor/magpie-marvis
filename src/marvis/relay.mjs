@@ -28,7 +28,7 @@
 
 import { createServer } from "node:http"
 import { networkInterfaces } from "node:os"
-import { randomBytes } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 
 /** 普通 Chrome UA：qrconnect / ptlogin 这些页面按浏览器 UA 下发，别用 Marvis 的 Electron UA */
 const UA =
@@ -65,6 +65,17 @@ export function hash33(s) {
  * @param {string} text
  * @returns {{ errcode: number, code: string }}
  */
+/**
+ * QQ 的 `g_tk`（qlogin_v2.js 里的 Q.getToken）：种子是 5381，不是 hash33 的 0。
+ * @param {string} s
+ */
+export function gtk(s) {
+  let hash = 5381
+  const t = String(s ?? "")
+  for (let i = 0; i < t.length; i += 1) hash += (hash << 5) + t.charCodeAt(i)
+  return hash & 0x7fffffff
+}
+
 export function parseWxPoll(text) {
   const s = String(text ?? "")
   const err = /wx_errcode\s*=\s*(-?\d+)/.exec(s)
@@ -108,7 +119,12 @@ function createJar() {
         if (i <= 0) continue
         const name = pair.slice(0, i).trim()
         const value = pair.slice(i + 1).trim()
-        if (name) jar.set(name, value)
+        if (!name) continue
+        // 上游同一个名字会下发多次（不同 Domain/Path），其中一次可能是「删除」（空值）。
+        // 我们这个罐子不分 Domain，所以空值不许覆盖已有值 —— 否则 p_skey 被清成空，
+        // 确认授权时 g_tk 算出来是 5381，腾讯当成 CSRF 又跳回授权页（实测踩过）。
+        if (!value && jar.has(name)) continue
+        jar.set(name, value)
       }
     },
     /** @param {string} name */
@@ -239,12 +255,72 @@ async function qqSession({ authUrl, fetchImpl }) {
       })
       jar.save(res)
       const loc = res.headers.get("location") ?? ""
-      if (!loc) return ""
+      if (!loc) {
+        // 走到 graph.qq.com/oauth2.0/show 这一页：二维码已经登录成功，但还要
+        // 「确认授权」——那一步是页面里的 JS 干的，我们照着 qlogin_v2.js 自己 POST。
+        const html = await res.text()
+        return confirmAuthorize(html, url)
+      }
       const next = new URL(loc, url).toString()
       if (/[?&]code=/.test(next)) return next
       url = next
     }
     return ""
+  }
+
+  /**
+   * 复刻 qlogin_v2.js 里 formSend() 的那一发 POST：
+   * `POST https://graph.qq.com/oauth2.0/authorize`，带 openapi=授权项、g_tk=hash(p_skey)…
+   * 不这么做就永远停在「请确认授权」，用户那边看到的是插件一直转圈。
+   * @param {string} html 授权页 HTML
+   * @param {string} pageUrl 授权页地址（参数从它的 query 里取）
+   * @returns {Promise<string>} 带 code 的回调地址，取不到返回空串
+   */
+  async function confirmAuthorize(html, pageUrl) {
+    let q = new URLSearchParams()
+    try {
+      q = new URL(pageUrl).searchParams
+    } catch {}
+    // 授权项：页面里勾上的那几个 checkbox（Marvis 只有一个 1010：头像昵称）
+    const openapi =
+      [...String(html).matchAll(/name="api_choose"[^>]*value="(\d+)"/g)].map((m) => m[1]).join("_") ||
+      "1010"
+    const body = new URLSearchParams({
+      response_type: q.get("response_type") ?? "code",
+      client_id: q.get("client_id") ?? "",
+      redirect_uri: q.get("redirect_uri") ?? "",
+      scope: q.get("scope") ?? "",
+      state: q.get("state") ?? "",
+      switch: q.get("switch") ?? "",
+      from_ptlogin: "1",
+      src: "1",
+      update_auth: "1",
+      openapi,
+      g_tk: String(gtk(jar.get("p_skey"))),
+      auth_time: String(Date.now()),
+      ui: randomUUID().toUpperCase(),
+    })
+    const res = await fetchImpl("https://graph.qq.com/oauth2.0/authorize", {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        "User-Agent": UA,
+        Referer: pageUrl,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        Cookie: jar.header(),
+      },
+      body: body.toString(),
+    })
+    jar.save(res)
+    const loc = res.headers.get("location") ?? ""
+    if (loc) {
+      const next = new URL(loc, "https://graph.qq.com/").toString()
+      return /[?&]code=/.test(next) ? next : ""
+    }
+    // 有的版本是 200 + 一段跳转脚本
+    const text = await res.text()
+    const m = /https:\/\/[^"'\s]*marvis_oauth[^"'\s]*[?&]code=[A-Za-z0-9_-]+/.exec(text)
+    return m ? m[0].replace(/\\\//g, "/") : ""
   }
 
   return {
@@ -270,8 +346,15 @@ async function qqSession({ authUrl, fetchImpl }) {
         // 扫码成功但拿不到 code：说明授权页要人工确认（协议变了），别假装成功
         return url ? { status: "done", url } : { status: "scanned" }
       }
-      if (cb.code === "67") return { status: "expired" }
-      if (cb.code === "65") return { status: "cancelled" }
+      // 上游的码（实测抓的）：
+      //   66 二维码未失效 = 还没扫
+      //   67 二维码认证中 = 已扫，手机那头正在点确认 —— **必须继续轮询同一张二维码**
+      //   65 二维码已失效 = 过期，该换一张
+      //   0  登录成功，第三个参数是 jumpUrl
+      // 67 曾经被当成「过期」直接换二维码：手机确认的是旧的那张，新的一张永远没人扫，
+      // 于是就卡在「请在浏览器中完成登录」—— 用户实测踩到过。
+      if (cb.code === "67") return { status: "scanned" }
+      if (cb.code === "65") return { status: "expired" }
       return { status: "waiting" }
     },
   }
@@ -550,7 +633,6 @@ export async function startRelayLogin(o) {
     rejectCode(new Error(`扫码登录超时（${Math.round(timeoutMs / 60_000)} 分钟没扫）。请重新点一次登录。`))
     close()
   }, timeoutMs)
-  timer.unref?.()
 
   /** 重新申请一张二维码（过期时） */
   async function makeSession() {
@@ -628,7 +710,9 @@ export async function startRelayLogin(o) {
         // ⚠ 上游正常会挂住 15~25 秒（长轮询）。万一它秒回（405 / 网络抖动），
         //   这里补一个下限间隔，否则会变成每秒几十次的热循环把二维码刷成风控。
         const spent = Date.now() - t0
-        if (spent < 800) await new Promise((res) => setTimeout(res, 800 - spent).unref?.())
+        // ⚠ 这个 setTimeout 不能 unref：宿主进程里如果此刻没有别的活，
+        //   事件循环会直接空掉，Node 退出，扫码页就那么一直"等着"（实测过）。
+        if (spent < 800) await new Promise((res) => setTimeout(res, 800 - spent))
       }
     } catch (err) {
       if (closed) return

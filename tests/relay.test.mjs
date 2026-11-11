@@ -11,6 +11,7 @@ import test from "node:test"
 import { createServer } from "node:http"
 
 import {
+  gtk,
   hash33,
   lanAddresses,
   parsePtuiCB,
@@ -389,5 +390,149 @@ test("端口被别的程序占着：报能看懂的错，而不是底层 EADDRIN
     await assert.rejects(startRelayLogin(qc(port)), /被占用/)
   } finally {
     await new Promise((r) => blocker.close(r))
+  }
+})
+
+// 用户实测的 bug：手机扫码后一直卡在「请在浏览器中完成登录」。
+// 根因：上游在「已扫、手机正在确认」时回 ptuiCB('67', ..., '二维码认证中。')，
+// 插件把 67 当成「已过期」，立刻换了一张二维码 —— 手机确认的是旧的那张，
+// 新的那张永远没人扫，于是永远等不到 code。
+test("QQ 扫码：'认证中'(67) 不能当成过期去换二维码", async () => {
+  const CALLBACK =
+    "https://yybadaccess.3g.qq.com/marvis_client_login/marvis_oauth?login_type=QC&code=QCODE9&state=31.5"
+  let shown = 0
+  /** @type {string[]} 66 未扫 → 67 认证中 → 0 成功 */
+  const polls = ["66", "67", "0"]
+
+  /** @type {any} */
+  const fetchImpl = async (url) => {
+    const u = String(url)
+    if (u.includes("xlogin")) {
+      return res({ body: "<html>xlogin</html>", setCookie: ["pt_login_sig=LOGINSIG; Path=/"] })
+    }
+    if (u.includes("ptqrshow")) {
+      shown += 1
+      return res({ body: Buffer.from([0x89, 0x50]), setCookie: [`qrsig=QRSIG${shown}; Path=/`] })
+    }
+    if (u.includes("ptqrlogin")) {
+      const code = polls.shift() ?? "66"
+      if (code === "0") {
+        return res({
+          body: "ptuiCB('0','0','https://ptlogin2.graph.qq.com/check_sig?x=1','0','登录成功！','')",
+        })
+      }
+      const message = code === "67" ? "二维码认证中。" : "二维码未失效。"
+      return res({ body: `ptuiCB('${code}','0','','0','${message}', '')` })
+    }
+    if (u.includes("check_sig")) {
+      return res({ status: 302, headers: { location: "https://graph.qq.com/oauth2.0/authorize?which=Login" } })
+    }
+    if (u.includes("oauth2.0/authorize")) {
+      return res({ status: 302, headers: { location: CALLBACK } })
+    }
+    throw new Error(`没预料到的请求：${u}`)
+  }
+
+  const relay = await startRelayLogin({
+    loginType: "QC",
+    authUrl: "https://graph.qq.com/oauth2.0/authorize?which=Login",
+    guid: "0123456789abcdef0123456789abcdef",
+    fetchImpl,
+    ifaces: loopback,
+    timeoutMs: 10_000,
+  })
+
+  try {
+    assert.equal(await relay.waitForCode(), CALLBACK)
+    assert.equal(shown, 1, "二维码只该申请一次：认证中不能换图")
+  } finally {
+    relay.close()
+  }
+})
+
+// 用户实测的第二个 bug：扫码、手机点确认之后，插件还是停在「请在浏览器中完成登录」。
+// 链路是 check_sig → oauth2.0/authorize → oauth2.0/show（一个 HTML 页），
+// 那页上的「确认授权」是页面里的 JS 干的（qlogin_v2.js 的 formSend），
+// 我们不跑 JS，所以就停在那里了。这里照它的实现补一发 POST。
+test("QQ 扫码：走到授权确认页时，自己 POST 一次把它过掉", async () => {
+  const CALLBACK =
+    "https://yybadaccess.3g.qq.com/marvis_client_login/marvis_oauth?login_type=QC&code=QCODE9&state=31.5"
+  /** @type {any} */
+  let confirmBody = ""
+  const polls = ["0"]
+
+  /** @type {any} */
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes("xlogin")) {
+      return res({ body: "<html>xlogin</html>", setCookie: ["pt_login_sig=LOGINSIG; Path=/"] })
+    }
+    if (u.includes("ptqrshow")) {
+      return res({ body: Buffer.from([0x89, 0x50]), setCookie: ["qrsig=QRSIG; Path=/"] })
+    }
+    if (u.includes("ptqrlogin")) {
+      polls.shift()
+      return res({
+        body: "ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?x=1','0','登录成功！','')",
+      })
+    }
+    if (u.includes("check_sig")) {
+      return res({
+        status: 302,
+        headers: { location: "https://graph.qq.com/oauth2.0/authorize?which=Login" },
+        // 上游会下发两个同名 p_skey，后一个是「删除」（空值）—— 空值不能盖掉真值
+        setCookie: [
+          "p_skey=PSKEYVALUE; Path=/; Domain=.qq.com",
+          "p_skey=; Path=/; Domain=ptlogin2.qq.com",
+          "pt_oauth_token=TOK; Path=/",
+        ],
+      })
+    }
+    if (u === "https://graph.qq.com/oauth2.0/authorize" && init.method === "POST") {
+      confirmBody = String(init.body)
+      return res({ status: 302, headers: { location: CALLBACK } })
+    }
+    if (u.startsWith("https://graph.qq.com/oauth2.0/authorize")) {
+      return res({
+        status: 302,
+        headers: {
+          location:
+            "https://graph.qq.com/oauth2.0/show?which=Login&display=pc&response_type=code&client_id=1903794758" +
+            "&redirect_uri=https%3A%2F%2Fyybadaccess.3g.qq.com%2Fmarvis_client_login%2Fmarvis_oauth%3Flogin_type%3DQC&state=31.5",
+        },
+      })
+    }
+    if (u.startsWith("https://graph.qq.com/oauth2.0/show")) {
+      return res({
+        body: `<html><input name="api_choose" type="checkbox" value="1010" checked /></html>`,
+      })
+    }
+    throw new Error(`没预料到的请求：${u}`)
+  }
+
+  const relay = await startRelayLogin({
+    loginType: "QC",
+    authUrl:
+      "https://graph.qq.com/oauth2.0/authorize?which=Login&response_type=code&client_id=1903794758" +
+      "&redirect_uri=https%3A%2F%2Fyybadaccess.3g.qq.com%2Fmarvis_client_login%2Fmarvis_oauth%3Flogin_type%3DQC&state=31.5",
+    guid: "0123456789abcdef0123456789abcdef",
+    fetchImpl,
+    ifaces: loopback,
+    timeoutMs: 10_000,
+  })
+
+  try {
+    assert.equal(await relay.waitForCode(), CALLBACK)
+    const body = new URLSearchParams(confirmBody)
+    assert.equal(body.get("openapi"), "1010", "授权项要从页面的 api_choose 里抠")
+    assert.equal(body.get("from_ptlogin"), "1")
+    assert.equal(body.get("state"), "31.5")
+    assert.equal(
+      body.get("g_tk"),
+      String(gtk("PSKEYVALUE")),
+      "g_tk 必须用真的 p_skey 算（空值不能盖掉它）",
+    )
+  } finally {
+    relay.close()
   }
 })
