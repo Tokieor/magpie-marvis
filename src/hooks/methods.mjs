@@ -161,11 +161,14 @@ async function relayAuthorize(loginType, guid, authUrl, hint) {
     `2) 用${loginType === "WX" ? "微信" : "手机 QQ"}扫码，并在手机上确认登录\n` +
     "3) 页面显示「登录成功」后回到 magpie 即可\n" +
     (hint ? `\n${hint}\n` : "") +
-    "\n打不开这个地址：多半是端口被防火墙拦了，或 magpie 跑在容器里没把端口映射出来。\n" +
-    "容器里的办法：给 magpie 加两个环境变量 ——\n" +
-    "   MAGPIE_MARVIS_RELAY_PORT=18080   （固定端口，方便只映射这一个）\n" +
-    "   MAGPIE_MARVIS_RELAY_URL=http://192.168.5.9:18080   （外面实际能打开的地址）\n" +
-    "然后重新点一次登录。Windows 且装了 Marvis 客户端的，也可以改用「从本机 Marvis 导入」。"
+    "\n⚠ 上面这个端口是**扫码页**的端口，不是 magpie 自己的端口。打不开 / 看到 404、401、" +
+    "或者一个要你登录的页面，都说明端口对不上：\n" +
+    "   · 容器要额外映射一个端口，比如 18080:18080（magpie 的 3430 不要拿来用）\n" +
+    "   · 环境变量 MAGPIE_MARVIS_RELAY_PORT=18080（插件在里面监听的端口）\n" +
+    "   · 环境变量 MAGPIE_MARVIS_RELAY_URL=http://<宿主机 IP>:18080（外面实际打开的那个）\n" +
+    "改完要**重建**容器才生效（docker compose up -d --force-recreate）。\n" +
+    "验证：在局域网任意一台机器上 curl -I 那个地址，应当是 200 且 Content-Type 是 text/html。\n" +
+    "Windows 且装了 Marvis 客户端的，也可以改用「从本机 Marvis 导入」。"
 
   return {
     // 给用户那台机器打开的地址（不是授权页）：opened:false 让 magpie 去开它

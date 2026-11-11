@@ -379,7 +379,7 @@ export async function startRelayLogin(o) {
   const base = `/s/${token}/`
 
   /** @type {{ status: string, message: string, qr: number, code: string }} */
-  const st = { status: "waiting", message: "", qr: 0, code: "" }
+  const st = { status: "waiting", message: "", qr: 0, code: "", reach: "" }
   let image = Buffer.alloc(0)
   let imageType = "image/png"
   let closed = false
@@ -421,7 +421,7 @@ export async function startRelayLogin(o) {
       return send(
         200,
         "application/json; charset=utf-8",
-        JSON.stringify({ status: st.status, message: st.message, qr: st.qr }),
+        JSON.stringify({ status: st.status, message: st.message, qr: st.qr, reach: st.reach }),
       )
     }
     // 其余路径（含 `/`）一律不认：这个服务只服务上面三个路径
@@ -445,6 +445,32 @@ export async function startRelayLogin(o) {
     .trim()
     .replace(/\/+$/, "")
   const url = external ? `${external}${base}` : `http://${address}:${port}${base}`
+
+  // 自查一次「对外地址」：容器里最常见的事故是端口映射写成了 magpie 自己的端口，
+  // 用户打开看到的是 magpie 的 404 / 401，而插件这边毫无线索。这里主动访问一次，
+  // 把结果写进日志（docker logs 能看见），页面 /status 里也带上。
+  if (!o.fetchImpl) {
+    void (async () => {
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(3000) })
+        if (r.status === 200) {
+          st.reach = "ok"
+          return
+        }
+        st.reach = `http-${r.status}`
+        console.error(
+          `[magpie-marvis] 扫码页的对外地址返回 ${r.status}：${url}\n` +
+            "  多半是端口映射没对上（映射到的不是插件的监听端口），或 MAGPIE_MARVIS_RELAY_URL 填成了 magpie 自己的端口。",
+        )
+      } catch (err) {
+        st.reach = "unreachable"
+        console.error(
+          `[magpie-marvis] 扫码页的对外地址连不上：${url}（${/** @type {any} */ (err)?.message ?? err}）\n` +
+            "  检查容器是否把 MAGPIE_MARVIS_RELAY_PORT 映射到了宿主机，以及 MAGPIE_MARVIS_RELAY_URL 的端口是否就是这个映射端口。",
+        )
+      }
+    })()
+  }
 
   const timer = setTimeout(() => {
     st.status = "timeout"

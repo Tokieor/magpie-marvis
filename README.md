@@ -131,6 +131,28 @@ ports:
 
 两个都不设也能用 —— 前提是 magpie 用 host 网络，或者你能访问容器的内网 IP。
 
+### 打开扫码页是 404 / 401 / 要求登录 magpie？
+
+说明你打开的**是 magpie 自己的端口，不是插件的端口**。两者不是一个服务：
+
+| 服务 | 监听在哪 | 例子 |
+|---|---|---|
+| magpie 本体（Go） | 容器内 `3430` | 宿主机 `23430:3430` |
+| 扫码页（本插件） | 容器内 `MAGPIE_MARVIS_RELAY_PORT` | 宿主机 `18080:18080` |
+
+- `404 page not found` 是 **Go 的默认 404** —— 看到这句话就说明请求打到了 magpie 本体
+- magpie 本体对陌生路径会回 401「open the link magpie web printed…」，也不是插件的页面
+
+所以 `MAGPIE_MARVIS_RELAY_URL` 里的端口必须是**映射到插件那个端口**的宿主机端口，不是 magpie 的端口。
+验证（在局域网任意一台机器上）：
+
+```bash
+curl -I http://192.168.5.9:18080/     # 应当 200 + text/html
+```
+
+插件启动扫码时会自己访问一次这个地址，对不上会在 `docker logs` 里打印
+`[magpie-marvis] 扫码页的对外地址返回 401…` 这样的告警。
+
 ## 设备指纹（不需要任何二进制）
 
 请求头 `Ual-Access-MarvisExt` 里要带一个 **uskey**（设备指纹）和一个 `qimei36`。
