@@ -105,6 +105,25 @@ export function extractCode(input) {
   return null
 }
 
+/**
+ * 从 `callback` 收到的参数里挑出「用户粘贴的内容」。
+ *
+ * ⚠ 宿主对 `method: "code"` 的调用形态是 `callback(粘贴内容)`（社区插件
+ *   `opencode-raccoon-auth` 的手动入口即如此，实机在跑）；本插件历史写法是
+ *   `callback(url, input)`。两种都认：优先取**能抠出 code** 的那个参数，
+ *   都不像时取最后一个非空字符串 —— 让用户拿到「回调地址里没 code」这种可读错误。
+ *
+ * @param {unknown} a
+ * @param {unknown} b
+ * @returns {string}
+ */
+export function pastedInputOf(a, b) {
+  const cands = [a, b].filter((v) => typeof v === "string" && v.trim())
+  if (!cands.length) return ""
+  for (const c of cands) if (extractCode(c)) return c
+  return cands[cands.length - 1]
+}
+
 /** 官方客户端 UA —— 服务端按它识别调用方（换成普通 Chrome UA 会被判参数无效） */
 const MARVIS_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +

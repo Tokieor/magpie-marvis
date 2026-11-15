@@ -33,7 +33,7 @@
 //   由 Node 带 guid 换**唯一那一次**。`body` 恒为空 —— 没有「回调页正文」这回事。
 
 import { PROVIDER, LOGIN_TYPE } from "../context.mjs"
-import { authorizeUrl, parseCallback, deviceGuid } from "../marvis/login.mjs"
+import { authorizeUrl, parseCallback, deviceGuid, pastedInputOf, stateOf, extractCode } from "../marvis/login.mjs"
 import { createDeviceRegistry, newDeviceGuid, stateOfUrl } from "../marvis/device.mjs"
 import { openIsolatedLogin, findBrowser } from "../marvis/browser.mjs"
 import { startRelayLogin } from "../marvis/relay.mjs"
@@ -48,6 +48,14 @@ import { fetchUserProfile, accountLabel } from "../marvis/profile.mjs"
  *   两个登录窗口并行时就会串号。按 OAuth state 分开存，天然隔离。
  */
 const pendingDevices = createDeviceRegistry()
+
+/**
+ * 手动粘贴那条路的 state → guid。
+ *
+ * 它比自动流程慢（用户要扫码、再把地址栏复制回来），10 分钟不够，给 30 分钟。
+ * 仍然一次性：同一条回调地址换过一次就作废。
+ */
+const pendingManual = createDeviceRegistry({ ttlMs: 30 * 60_000 })
 
 /** 回调地址判据：跳到 marvis_oauth 且带 code= */
 const CALLBACK = /marvis_client_login\/marvis_oauth\?[^#]*\bcode=/i
@@ -288,6 +296,68 @@ function oauthLogin(loginType, label, instructions) {  return {
   }
 }
 
+/**
+ * 手动粘贴回调地址（无头 / NAS 场景）。
+ *
+ * 与 `oauthLogin` 的区别只有两点：
+ *   1. **不**自己开浏览器 —— 返回 `method: "code"`，宿主把授权页交给用户自己的浏览器，
+ *      登录完由宿主收一段粘贴进来的文本；
+ *   2. guid 从**粘贴回来的 state** 反查（QQ 的 state 是随机小数，微信的 state 就是 guid）。
+ *
+ * ⚠ guid 必须与授权那次同一个：缺 → `-109`，不是授权那台设备 → `-107`。
+ * ⚠ 不设 `opened: true` —— 设了宿主就不会弹页，用户看不到二维码。
+ * ⚠ `callback` 的参数形态两种都认（见 `pastedInputOf`）。
+ */
+function manualPasteLogin(loginType, label, instructions) {
+  return {
+    type: "oauth",
+    label,
+    async authorize() {
+      const guid = newDeviceGuid()
+      const url = authorizeUrl(loginType, guid)
+      pendingManual.remember(stateOfUrl(url) || guid, guid)
+      return {
+        url,
+        method: "code",
+        instructions,
+        async callback(a, b) {
+          const pasted = pastedInputOf(a, b)
+          if (!pasted) {
+            throw new Error(
+              "没有收到回调地址：登录完请把浏览器地址栏里那条 `…marvis_oauth?code=…&state=…` 整条粘贴回来。",
+            )
+          }
+          // ⚠ 先确认里面真有 code，再动 registry：空输入/贴错东西时不许把这次登录作废，
+          //   否则用户连一次重试的机会都没有（维护者 #9 评审第 1 点）
+          if (!extractCode(pasted)) {
+            throw new Error(
+              "粘贴的内容里没有 code：请把地址栏里那条 `…marvis_oauth?login_type=…&code=…&state=…` 整条复制。",
+            )
+          }
+          const state = stateOf(pasted)
+          if (!state) {
+            throw new Error("粘贴的内容里没有 state：请重新复制地址栏里那条回调地址。")
+          }
+          // 微信的 state 本身就是 guid，QQ 的只能靠 authorize() 那次暂存
+          const guid =
+            pendingManual.take(state) || (loginType === "WX" && /^[0-9a-f]{32}$/i.test(state) ? state : "")
+          if (!guid) {
+            throw new Error("登录流程已失效（找不到这次登录的设备标识）。请重新点一次登录。")
+          }
+          try {
+            const acct = await withProfile(await parseCallback(pasted, "", { loginType, guid }), loginType)
+            return authOf({ ...acct, guid, loginType: acct.loginType ?? LOGIN_TYPE[loginType] ?? "1" })
+          } catch (err) {
+            // 换取失败（网络/上游抖动/上游临时错误）：把 state→guid 放回去，允许同一条回调地址重试
+            pendingManual.remember(state, guid)
+            throw err
+          }
+        },
+      }
+    },
+  }
+}
+
 export function methods() {
   return [
     oauthLogin(
@@ -339,6 +409,21 @@ export function methods() {
         }
       },
     },
+    // 无头 / NAS：没有浏览器也没有 Windows 客户端时走这两条
+    manualPasteLogin(
+      "QC",
+      "QQ 登录（粘贴回调地址）",
+      "1) 会用你自己的浏览器打开 QQ 授权页（手机扫码也行）\n" +
+        "2) 登录并确认授权后，浏览器停在 `yybadaccess.3g.qq.com/…marvis_oauth?login_type=QC&code=…`\n" +
+        "3) 把地址栏那条地址整条复制，粘贴到下面的输入框",
+    ),
+    manualPasteLogin(
+      "WX",
+      "微信登录（粘贴回调地址）",
+      "1) 会用你自己的浏览器打开微信扫码页（手机扫码即可）\n" +
+        "2) 扫码确认后，浏览器停在 `yybadaccess.3g.qq.com/…marvis_oauth?login_type=WX&code=…`\n" +
+        "3) 把地址栏那条地址整条复制，粘贴到下面的输入框",
+    ),
   ]
 }
 
