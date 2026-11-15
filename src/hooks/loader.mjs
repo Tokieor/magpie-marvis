@@ -12,6 +12,7 @@
 import { BASE_V1, DEFAULT_MODEL, DISPLAY_BY_SLOT, canonicalModelId, isUnavailableModel } from "../context.mjs"
 import { llmHeaders } from "../marvis/protocol.mjs"
 import { normalizeTools } from "../marvis/tool-schema.mjs"
+import { InvalidImageError, normalizeMessages } from "../marvis/images.mjs"
 
 /**
  * 上游说「模型不行」的信号 —— 只收**模型级**的，映射成 404（搁置这个模型，不打死账号）。
@@ -155,6 +156,23 @@ export function loaderHook() {
             if (tools !== json.tools) {
               json.tools = tools
               changed = true
+            }
+            if (!unavailableModel) {
+              try {
+                // Marvis 只认 OpenAI `image_url` + `data:image/...;base64`：
+                // 图片 http(s) URL / 裸 base64 / Anthropic `{type:"image",source}` 都归一成 data URI。
+                // 归一不了就本地 400 —— 不静默丢图，也不把无效输入丢给上游换个看不懂的错。
+                const messages = await normalizeMessages(json.messages)
+                if (messages !== json.messages) {
+                  json.messages = messages
+                  changed = true
+                }
+              } catch (err) {
+                if (err instanceof InvalidImageError) {
+                  return errorResponse(400, "invalid_image", `图片输入无效：${err.message}`)
+                }
+                throw err
+              }
             }
             if (changed) {
               body = JSON.stringify(json)

@@ -14,6 +14,11 @@
   不是 4.1f。它的显示名改成本 fork 实测到的真实值 `deepseek-v4-flash-ga-260731 (pro-external 槽位)`，
   免得又出现「名字写 A、实际跑 B」——那正是 magpie 那条「很可能换成了别的模型」警告的来源
 - 该槽位的两个旧名（`deepseek-v4-pro-202606`、`deepseek-v4-1-flash-261017 (防降级)`）都保留归一映射
+- 并入上游尚未发布的「图片输入归一」分支（issue #8 后续）：图片 http(s) URL / 裸 base64 /
+  Anthropic `{type:"image",source}` 三种输入统一转成 Marvis 要的 `data:image/...;base64`，
+  转不了就本地 400（`invalid_image`）—— 之前只有 `vision: true` 声明，URL 形式的附件会原样丢给上游
+- 该分支的 SSRF 预检（私网 / 本机 / link-local / CGNAT 一律拦）默认保留，另加开关
+  `MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS=1` 放行局域网图片地址 —— 附件就在 NAS 上时不然传不上去
 - 上游到 0.2.24 仍未修 `Marvis-Scene`（claude / gpt 三个模型在他们那儿依旧 4130001），本 fork 的 0.2.27 已修
 
 ## 0.2.27 — 2026-11-11

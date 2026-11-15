@@ -134,6 +134,23 @@ ports:
 
 两个都不设也能用 —— 前提是 magpie 用 host 网络，或者你能访问容器的内网 IP。
 
+### 图片：URL 形式的附件
+
+Marvis 只接受 `data:image/...;base64` 形态的图片。插件会把这三种输入自动转成它：
+
+- 图片 `http(s)` URL —— 插件自己下载后转 base64（20 MiB 上限，只认 PNG / JPEG / GIF / WebP）
+- 裸 base64 —— 认出图片头后补成 data URI
+- Anthropic 的 `{ "type": "image", "source": { ... } }` —— 转成 OpenAI 的 `image_url`
+
+转换不了就**本地 400**（`invalid_image`），不会静默丢图，也不会把无效输入丢给上游换个看不懂的错。
+
+⚠ 出于防 SSRF，**指向本机 / 内网 / 保留地址的图片 URL 默认被拒**。如果附件就在你这台 NAS 上
+（`http://192.168.5.9/...`），打开这个开关即可；其余校验（协议、大小、MIME、不跟随重定向）照旧：
+
+| 环境变量 | 作用 | 例子 |
+|---|---|---|
+| `MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS` | 放行内网 / 本机图片地址 | `1` |
+
 ### 打开扫码页是 404 / 401 / 要求登录 magpie？
 
 说明你打开的**是 magpie 自己的端口，不是插件的端口**。两者不是一个服务：
