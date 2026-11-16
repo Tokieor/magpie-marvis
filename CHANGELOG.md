@@ -1,5 +1,20 @@
 # 更新记录
 
+## 0.2.39 — 2026-11-16
+
+**修复（0.2.38 的改写思路已失效：上游改成按「词对」判指纹）**
+
+- 0.2.38 照抄上游的做法是往词中间插连字符（`Claude Code`→`Claude-Code`）。2026-11-16 复测：
+  `Claude-Code` / `DeepSeek-Harness` / `Codex-CLI` 全部**仍然 403**，只有 OpenCode 那条换实词的规则生效
+- 重新实测判据：`You are` 紧邻产品名、`powered by` + `DeepSeek`、`running in` + 产品名 三类**词对**。
+  改判据后改成「换实词」，五条规则逐条用真账号验证 403 → 200：
+  `You are`→`You're`、`powered by`→`built on`、`running in the Codex`→`working in the Codex`、
+  `running in OpenCode`→`working in OpenCode`、中文那句改成 `DeepSeek-Harness`（中文现已不拦，留着兜底）
+- 顺带删掉 `loader.mjs` 里 `normalizeMessages` 的**重复调用块**（0.2.38 合并上游时的冲突残留，
+  同一批消息会被归一两次）
+- 验收：测试 182 项中 178 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过；
+  网关实测 OpenCode / DSH / Codex / Claude 四种身份句首行全部 200
+
 ## 0.2.38 — 2026-11-16
 
 **修复（OpenCode 2 的 system prompt 被上游当内容指纹，每轮 403）**

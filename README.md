@@ -182,14 +182,24 @@ curl -I http://192.168.5.9:18080/     # 应当 200 + text/html
 | `You are an AI agent running in OpenCode, a coding agent harness.` | 403 |
 | `You are an AI agent powered by DeepSeek Harness.` | 403 |
 | `You are Claude Code, Anthropic's official CLI tool for Claude.` | 403 |
+| `You are a coding agent running in the Codex CLI, a terminal-based coding assistant.` | 403 |
 | 同一句放到第 2 行 / user 消息里 | 200 |
 
-插件在**请求体这一层**自动改写：只把首行词与词之间的那点东西换掉（`running`→`working`、
-`Claude Code`→`Claude-Code`、`DeepSeek Harness`→`DeepSeek-Harness`），句子其余字节一个不动。
+判据是**词对**，不是字符：`You are` 紧邻产品名、`powered by` + `DeepSeek`、`running in` + 产品名。
+往词中间插连字符（`Claude-Code`、`DeepSeek-Harness`、`Codex-CLI`）**已经不管用**了
+（2026-11-16 复测仍 403），必须换实词。插件在**请求体这一层**做等价替换：
+
+| 原始首行 | 改写后 | 实测 |
+|---|---|---|
+| `You are Claude Code, …` | `You're Claude Code, …` | 403 → 200 |
+| `…powered by DeepSeek Harness.` | `…built on DeepSeek Harness.` | 403 → 200 |
+| `…running in the Codex CLI…` | `…working in the Codex CLI…` | 403 → 200 |
+| `…running in OpenCode…` | `…working in OpenCode…` | 403 → 200 |
+
 所以：
 
 - **不用**去改客户端二进制，也**不用**改客户端配置 —— 换任何宿主（OpenCode / DSH / Codex / Copilot）都生效
-- 改写是幂等的：已经写成连字符 / 破折号形态的，一个字节都不改
+- 改写是幂等的：已经写成 `You're` / `built on` / `working in` 的，一个字节都不改
 - 只动 `system` 首行：user / assistant / tool 里的同样文字上游本来就放行，改了反而多余
 
 如果改写之后**仍然** 403，说明上游又加了一条没见过的指纹 —— 把当时的 system prompt 首行贴到

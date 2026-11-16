@@ -47,36 +47,40 @@ const AUTH_EXPIRED = /4100403|登录态过期|未登录/
  *
  *   `You are an AI agent running in OpenCode, a coding agent harness.`  → 403 非法请求
  *   同一句放第 2 行                                                     → 200
- *   词间多一个空格 / 全小写 / 句子跨行（`…AI agent\nrunning in…`）        → 403
- *   `running` → `working` / `AI agent` → `AI-agent` / `OpenCode` → `Open-Code` → 200
- *   `You are Claude Code, Anthropic's official CLI tool for Claude.`     → 403 非法请求
- *   `You are Claude.`                                                    → 403
- *   裸 `Claude Code`（前面没有 `You are`）                                → 200
+ *   `running` → `working`                                               → 200
  *
- * ⇒ 各家 agent 的身份句是一张**持续变长的表**，不是一条正则能覆盖的。新命中的写法
- *   往下面的表里加一条即可；改写只动**词间的那点东西**（空格换连字符 / 动词换同义动词），
- *   句子其余部分一个字节都不碰 —— 客户端行为不变，上游放行。
+ * 2026-11-16 晚再测（上游改判据了，**词间插连字符那一招已经失效**）：
  *
- * ⇒ 判据是「首行里的词对」，不是「整句模板」。只认英文整句会漏掉中文与本地化写法 ——
- *   它们照样 403，而且因为不命中模板，连 content_filtered 诊断都不会触发，
- *   用户看到的仍是宿主那句「API 密钥无效」。
+ *   `You are an AI agent powered by DeepSeek-Harness.`                  → 403（连字符不再放行）
+ *   `You are Claude-Code, Anthropic's official CLI for Claude.`         → 403
+ *   `You are an AI agent powered by DeepSeek Harness.`                  → 403
+ *   `You are an AI agent built on DeepSeek Harness.`                    → 200（换介词短语）
+ *   `You are a coding agent running in the Codex CLI.`                  → 403
+ *   `You are a coding agent working in the Codex CLI.`                  → 200（换动词）
+ *   `You are Claude Code, Anthropic's official CLI tool for Claude.`    → 403
+ *   `You are Claude.`                                                   → 403
+ *   `You're Claude Code, Anthropic's official CLI tool for Claude.`     → 200（You're ≠ You are）
+ *   `You are the Claude Code CLI, …` / `You are an instance of Claude Code` → 200（中间插词）
+ *   中文 `你是一个由 DeepSeek Harness 驱动的 AI 助手。`                    → 200（中文这条已不再拦）
+ *
+ * ⇒ 上游现在的判据是「**词**」：`You are` 紧邻产品名、`powered by DeepSeek`、`running in <产品>`
+ *   这三类词对。所以改写只能换**实词**（缩写 / 同义动词 / 同义介词短语），插标点没用。
+ *   每条规则都留了实测 200 的对照串，改之前先直打上游确认。
  */
 const IDENTITY_PHRASES = [
-  [/(You are an AI agent powered by DeepSeek)\s+(Harness)/i, "$1-$2"],
-  [/(You are a coding agent running in the Codex)\s+(CLI)/i, "$1-$2"],
-  [/(You are Claude)\s+(Code, Anthropic's official CLI for Claude)/i, "$1-$2"],
+  // Claude：`You are Claude…` 会被拦（连 `You are Claude.` 都拦），`You're Claude…` 放行
+  [/^You are(\s+)(Claude)/i, (_m, gap, name) => `You're${gap}${name}`],
+  // DSH：拦的是 `powered by DeepSeek` 这组词，换成同义的 `built on`
+  [/(\s)powered by(\s+DeepSeek)/i, "$1built on$2"],
+  // Codex / OpenCode：拦的是 `running in <产品>`，换动词
+  [/(\s)running in(\s+the\s+Codex)/i, "$1working in$2"],
+  [/(\s)running in(\s+OpenCode)/i, "$1working in$2"],
+  // 中文写法（历史上拦过，现已不拦；留着不亏，成本为零）
   [/(你是一个由\s*DeepSeek)\s+(Harness)/i, "$1-$2"],
-  // OpenCode 2 的身份句。上游拦的是 `running in OpenCode` 这个词对，所以把 running 换成
-  // 同义的 working（等长、句意不变、实测 200）—— 用户不用去改 opencode.exe 的二进制。
-  [
-    /(You are an AI agent)(\s+)(running)(\s+in\s+OpenCode)/i,
-    (_match, head, gap1, verb, gap2) => head + gap1 + (/^r/i.test(verb) ? "working" : "WORKING") + gap2,
-  ],
 ]
 
-/** 判定用（只看原文，不参与改写）：命中任一条即认为这次 403 是内容过滤 */
 const IDENTITY_PHRASE_TEST =
-  /You are an AI agent powered by DeepSeek\s+Harness|You are a coding agent running in the Codex\s+CLI|You are Claude\s+Code|You are an AI agent\s+running\s+in\s+OpenCode|你是一个由\s*DeepSeek\s+Harness/i
+  /You are\s+Claude|powered by\s+DeepSeek|running in\s+(the\s+)?(Codex|OpenCode)|你是一个由\s*DeepSeek\s+Harness/i
 
 /**
  * 上游内容过滤拦截时的**统一**提示。
@@ -311,23 +315,6 @@ export function loaderHook() {
               if (rewritten !== json.messages) {
                 json.messages = rewritten
                 changed = true
-              }
-            }
-            if (!unavailableModel) {
-              try {
-                // Marvis 只认 OpenAI `image_url` + `data:image/...;base64`：
-                // 图片 http(s) URL / 裸 base64 / Anthropic `{type:"image",source}` 都归一成 data URI。
-                // 归一不了就本地 400 —— 不静默丢图，也不把无效输入丢给上游换个看不懂的错。
-                const messages = await normalizeMessages(json.messages)
-                if (messages !== json.messages) {
-                  json.messages = messages
-                  changed = true
-                }
-              } catch (err) {
-                if (err instanceof InvalidImageError) {
-                  return errorResponse(400, "invalid_image", `图片输入无效：${err.message}`)
-                }
-                throw err
               }
             }
             if (changed) {
