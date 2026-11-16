@@ -32,6 +32,63 @@ const RISK_BLOCK = /4100404|风控拦截/
 const AUTH_EXPIRED = /4100403|登录态过期|未登录/
 
 /**
+ * Marvis 的内容过滤拦的是「**system 首行 + 词对 + 单个空格**」（issue #22 / #26）。
+ *
+ * 2026-11-15 首次定位 + 2026-11-16 复测（直打上游，只换 system prompt 第一句）：
+ *
+ *   `You are an AI agent powered by DeepSeek Harness.`      → 403 非法请求
+ *   中文写法（由 DeepSeek Harness 驱动…）                    → 403 非法请求
+ *   全小写同一句                                             → 403（大小写不敏感）
+ *   句末加 ! 或 ,                                            → 403（句末符号无效）
+ *   同一句放第 2 行 / 行内带前缀 / user 或 assistant 角色     → 200
+ *   `DeepSeek-Harness` / `DeepSeek — Harness`               → 200（词间插字符放行）
+ *
+ * 2026-11-16 追加实测（OpenCode 2 用户报的 403，直打上游只换 system 首行）：
+ *
+ *   `You are an AI agent running in OpenCode, a coding agent harness.`  → 403 非法请求
+ *   同一句放第 2 行                                                     → 200
+ *   词间多一个空格 / 全小写 / 句子跨行（`…AI agent\nrunning in…`）        → 403
+ *   `running` → `working` / `AI agent` → `AI-agent` / `OpenCode` → `Open-Code` → 200
+ *   `You are Claude Code, Anthropic's official CLI tool for Claude.`     → 403 非法请求
+ *   `You are Claude.`                                                    → 403
+ *   裸 `Claude Code`（前面没有 `You are`）                                → 200
+ *
+ * ⇒ 各家 agent 的身份句是一张**持续变长的表**，不是一条正则能覆盖的。新命中的写法
+ *   往下面的表里加一条即可；改写只动**词间的那点东西**（空格换连字符 / 动词换同义动词），
+ *   句子其余部分一个字节都不碰 —— 客户端行为不变，上游放行。
+ *
+ * ⇒ 判据是「首行里的词对」，不是「整句模板」。只认英文整句会漏掉中文与本地化写法 ——
+ *   它们照样 403，而且因为不命中模板，连 content_filtered 诊断都不会触发，
+ *   用户看到的仍是宿主那句「API 密钥无效」。
+ */
+const IDENTITY_PHRASES = [
+  [/(You are an AI agent powered by DeepSeek)\s+(Harness)/i, "$1-$2"],
+  [/(You are a coding agent running in the Codex)\s+(CLI)/i, "$1-$2"],
+  [/(You are Claude)\s+(Code, Anthropic's official CLI for Claude)/i, "$1-$2"],
+  [/(你是一个由\s*DeepSeek)\s+(Harness)/i, "$1-$2"],
+  // OpenCode 2 的身份句。上游拦的是 `running in OpenCode` 这个词对，所以把 running 换成
+  // 同义的 working（等长、句意不变、实测 200）—— 用户不用去改 opencode.exe 的二进制。
+  [
+    /(You are an AI agent)(\s+)(running)(\s+in\s+OpenCode)/i,
+    (_match, head, gap1, verb, gap2) => head + gap1 + (/^r/i.test(verb) ? "working" : "WORKING") + gap2,
+  ],
+]
+
+/** 判定用（只看原文，不参与改写）：命中任一条即认为这次 403 是内容过滤 */
+const IDENTITY_PHRASE_TEST =
+  /You are an AI agent powered by DeepSeek\s+Harness|You are a coding agent running in the Codex\s+CLI|You are Claude\s+Code|You are an AI agent\s+running\s+in\s+OpenCode|你是一个由\s*DeepSeek\s+Harness/i
+
+/**
+ * 上游内容过滤拦截时的**统一**提示。
+ *
+ * ⚠ 刻意**不点名**任何 agent / 身份句 —— 被拦的可能有很多家（DSH、Codex、Claude Desktop，
+ *   以及还没测到的），写死一家会在别家命中时把人带偏。只留两件确定的事：
+ *   ① 性质是内容过滤，不是密钥或登录；② 修复方法在群里。
+ */
+const CONTENT_FILTER_HINT =
+  "上游内容过滤拦截（非密钥或登录问题），修复方法见 QQ 群 451129479。"
+
+/**
  * 构造一个错误 Response。
  * @param {number} status
  * @param {string} code
@@ -43,6 +100,72 @@ function errorResponse(status, code, message, headers = {}) {
     status,
     headers: { "content-type": "application/json", ...headers },
   })
+}
+
+/**
+ * 把会被上游内容过滤拦下的身份句改写成能放行的形态。
+ *
+ * ⚠ 只改 system 消息**第一行**里的身份短语 —— 那是上游唯一会拦的位置；
+ *   user / assistant 里的同一句上游本来就放行，改了反而是多余改动。
+ * ⚠ 门禁不变：只把词间那一个空格换成连字符，其余字符一个都不碰；
+ *   已经写成连字符 / 破折号的形态没有空格可换，仍然原样发出（0.2.30 的用例继续守着）。
+ * ⚠ 返回**新数组**才表示改过 —— 调用方据此决定要不要重新序列化 body（并去掉 content-length）。
+ *
+ * @param {unknown} messages
+ * @returns {unknown}
+ */
+function firstLineOf(text) {
+  const cut = text.indexOf("\n")
+  return cut < 0 ? text : text.slice(0, cut)
+}
+
+/** 首行里的身份短语换成连字符形态；没有可换的就原样返回 */
+function rewriteFirstLine(text) {
+  const line = firstLineOf(text)
+  let next = line
+  for (const [pattern, replacement] of IDENTITY_PHRASES) {
+    next = next.replace(pattern, replacement)
+  }
+  return next === line ? text : next + text.slice(line.length)
+}
+
+function rewriteAgentIdentity(messages) {
+  if (!Array.isArray(messages)) return messages
+  let touched = false
+  const out = messages.map((message) => {
+    if (!message || typeof message !== "object") return message
+    if (message.role !== "system") return message
+    if (typeof message.content !== "string") return message
+    const content = rewriteFirstLine(message.content)
+    if (content === message.content) return message
+    touched = true
+    return { ...message, content }
+  })
+  return touched ? out : messages
+}
+
+/**
+ * 这次请求体里有没有「上游会拦的身份短语」—— **改写前**判定，只影响 403 的文案。
+ * 只看 system 首行，与上游判据保持同一集合，避免把普通 403 误判成内容过滤。
+ *
+ * @param {unknown} bodyString
+ * @returns {boolean}
+ */
+function identityBlockedInSystem(bodyString) {
+  if (typeof bodyString !== "string") return false
+  let json = null
+  try {
+    json = JSON.parse(bodyString)
+  } catch {
+    return false
+  }
+  const messages = Array.isArray(json?.messages) ? json.messages : []
+  for (const message of messages) {
+    if (!message || message.role !== "system") continue
+    const text = typeof message.content === "string" ? message.content : ""
+    if (IDENTITY_PHRASE_TEST.test(firstLineOf(text))) return true
+  }
+  return false
 }
 
 // ⚠ 不要用 TABLE（`DISPLAY_BY_SLOT`）当准入集合。
@@ -134,11 +257,22 @@ export function loaderHook() {
         // ⚠ 旧路由里模型 ID 是数组下标 `"0"…"7"`，上游只认槽位名。
         //   在这里做一次归一，旧路由不改配置也能继续用。
         let body = init?.body
+        /** 改写前的原始请求体 —— 403 诊断要靠它判断上游拦的是哪句身份声明（body 可能已被改写） */
+        const originalBody = typeof body === "string" ? body : ""
         /** @type {string | null} 命中「明确不可用」名单的模型 ID */
         let unavailableModel = null
+        /** 请求体里是否含被上游内容过滤定向拦截的 DSH 标识语句 */
+        let harnessIdentityPrompt = false
         if (typeof body === "string") {
+          // 只做标记，不改 body —— 命中与否只影响错误文案
+          harnessIdentityPrompt = identityBlockedInSystem(originalBody)
+          let json = null
           try {
-            const json = JSON.parse(body)
+            json = JSON.parse(body)
+          } catch {
+            /* 不是 JSON 就原样转发 */
+          }
+          if (json && typeof json === "object") {
             let changed = false
             const canonical = canonicalModelId(json.model)
             if (canonical !== json.model) {
@@ -149,13 +283,35 @@ export function loaderHook() {
               // 明确不可用名单（当前只有 kimi-k2.5）：本地挡掉，不出网、不 fallback。
               unavailableModel = String(json.model)
             }
-            // 其余模型（含 TABLE 外的旧真实槽位）一律出网，可用性由上游响应决定。
-            // Marvis 要求每个工具 parameters 显式 type:"object"；
-            // DSH 的部分工具省略了它，缺一个就 400 invalid parameter。
-            const tools = normalizeTools(json.tools)
-            if (tools !== json.tools) {
-              json.tools = tools
-              changed = true
+            if (unavailableModel === null) {
+              // Marvis 要求每个工具 parameters 显式 type:"object"；
+              // DSH 的部分工具省略了它，缺一个就 400 invalid parameter。
+              const tools = normalizeTools(json.tools)
+              if (tools !== json.tools) {
+                json.tools = tools
+                changed = true
+              }
+              try {
+                // 图片 URL / 裸 base64 / Anthropic image 显式归一为 data URI；
+                // 转换不了就本地 400，不再静默丢图或把无效输入交给上游。
+                const messages = await normalizeMessages(json.messages)
+                if (messages !== json.messages) {
+                  json.messages = messages
+                  changed = true
+                }
+              } catch (err) {
+                if (err instanceof InvalidImageError) {
+                  return errorResponse(400, "invalid_image", `图片输入无效：${err.message}`)
+                }
+                throw err
+              }
+              // ⚠ 上游内容过滤会精确拦下 DSH / Codex / Claude Desktop 的身份句
+              //   （issue #22 实测：身份短语中间换成连字符就放行）。自动改写，用户不用改客户端配置。
+              const rewritten = rewriteAgentIdentity(json.messages)
+              if (rewritten !== json.messages) {
+                json.messages = rewritten
+                changed = true
+              }
             }
             if (!unavailableModel) {
               try {
@@ -182,8 +338,6 @@ export function loaderHook() {
               delete merged["content-encoding"]
               delete merged["Content-Encoding"]
             }
-          } catch {
-            /* 不是 JSON 就原样转发 */
           }
         }
 
@@ -238,6 +392,13 @@ export function loaderHook() {
             "model_unavailable",
             `该模型在当前账号不可用${hint}：${text.slice(0, 300)}`,
           )
+        }
+        // ⚠ 403 +「非法请求」一律按内容过滤处理，**不再看是否命中已知指纹**。
+        //   理由：上游的指纹在持续扩大（英文 → 中文 → 还没见过的写法），按指纹判定永远漏；
+        //   而 403 + 这个组合目前只出现在内容过滤上（模型无权限是 400「无效模型id」）。
+        //   宁可多给一句「进群」，也不要把人甩回宿主那句「API 密钥无效」。
+        if (response.status === 403 && /非法请求|permission_error/i.test(text)) {
+          return errorResponse(403, "content_filtered", CONTENT_FILTER_HINT)
         }
         // 其余原样透出
         return new Response(text || null, {

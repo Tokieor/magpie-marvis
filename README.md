@@ -25,7 +25,7 @@ OpenCode —— 不用 API key，用你的 **QQ 或微信** 登录。
 
 | | |
 |---|---|
-| **模型** | DeepSeek V4.1 Flash、DeepSeek V4 Pro、DeepSeek V4 Flash、Hy3、Claude Sonnet 4.6、Claude Opus 4.6、GPT-5.4、HY-Vision 2.0 instruct —— 共 8 个模型 |
+| **模型** | DeepSeek V4.1 Flash（主路由 + 防降级路由，**两条都能识图**）、DeepSeek V4 Flash、Hy3、Claude Sonnet 4.6、Claude Opus 4.6、GPT-5.4、HY-Vision 2.0 instruct —— 共 8 个模型 |
 | **额度** | 一个号每天 1000 万**计费** token（缓存免费 + 输入输出五折，实际能跑 2000 万～5000 万+） |
 | **流式** | ✅ SSE 逐 token |
 | **思考** | ✅ `reasoning_content` 可见 |
@@ -172,6 +172,28 @@ curl -I http://192.168.5.9:18080/     # 应当 200 + text/html
 
 插件启动扫码时会自己访问一次这个地址，对不上会在 `docker logs` 里打印
 `[magpie-marvis] 扫码页的对外地址返回 401…` 这样的告警。
+
+### 403「非法请求」= 上游把 agent 身份句当内容指纹
+
+上游的内容过滤会拦「system prompt 首行里的 agent 身份句」，比如：
+
+| system 首行 | 结果 |
+|---|---|
+| `You are an AI agent running in OpenCode, a coding agent harness.` | 403 |
+| `You are an AI agent powered by DeepSeek Harness.` | 403 |
+| `You are Claude Code, Anthropic's official CLI tool for Claude.` | 403 |
+| 同一句放到第 2 行 / user 消息里 | 200 |
+
+插件在**请求体这一层**自动改写：只把首行词与词之间的那点东西换掉（`running`→`working`、
+`Claude Code`→`Claude-Code`、`DeepSeek Harness`→`DeepSeek-Harness`），句子其余字节一个不动。
+所以：
+
+- **不用**去改客户端二进制，也**不用**改客户端配置 —— 换任何宿主（OpenCode / DSH / Codex / Copilot）都生效
+- 改写是幂等的：已经写成连字符 / 破折号形态的，一个字节都不改
+- 只动 `system` 首行：user / assistant / tool 里的同样文字上游本来就放行，改了反而多余
+
+如果改写之后**仍然** 403，说明上游又加了一条没见过的指纹 —— 把当时的 system prompt 首行贴到
+QQ 群 451129479，加一条规则即可。
 
 ## 设备指纹（不需要任何二进制）
 

@@ -101,10 +101,9 @@ function isPrivateIp(ip) {
 /**
  * 是否放行内网 / 本机图片地址。
  *
- * 默认**不放行**（防 SSRF，见 assertPublicHttpUrl）。但插件就跑在用户自己的 NAS 上，
- * DSH / magpie 的附件常常是 `http://192.168.x.x/...` 这种局域网地址 —— 默认拦掉会让
- * 「图明明在眼前却传不上去」。所以给一个显式开关：
- *   `MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS=1`
+ * 默认**不放行**（防 SSRF）。但插件就跑在用户自己的 NAS 上，DSH / magpie 的附件常常是
+ * `http://192.168.x.x/...` 这种局域网地址 —— 默认拦掉会让「图明明在眼前却传不上去」。
+ * 所以给一个显式开关：`MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS=1`。
  * 打开后只跳过私网判定，其余校验（协议、账号信息、大小、MIME、不跟随重定向）照旧。
  */
 function allowPrivateImageHosts() {
@@ -114,25 +113,34 @@ function allowPrivateImageHosts() {
 
 async function assertPublicHttpUrl(parsed, lookupImpl) {
   if (parsed.username || parsed.password) fail("图片 URL 不允许携带账号信息，未发往 Marvis。")
-  const host = parsed.hostname.replace(/^\[|\]$/g, "")
-  const ips = []
-  if (isIP(host)) {
-    ips.push(host)
-  } else {
-    let records
-    try {
-      records = await lookupImpl(host, { all: true, verbatim: true })
-    } catch {
-      fail("图片域名无法解析，未发往 Marvis。")
-    }
-    for (const record of records || []) ips.push(record.address)
-  }
-  if (!ips.length) fail("图片域名没有可用解析结果，未发往 Marvis。")
-  // 应用层预检：字面 IP 与 DNS 解析结果全部须为公网地址。
-  // 残余风险：严格防 DNS rebinding 需要连接层固定已校验地址，当前实现不覆盖，在此明示。
+  // 显式开关：自己家的内网图床放行（其余校验照旧）
   if (allowPrivateImageHosts()) return
-  for (const ip of ips) {
-    if (isPrivateIp(ip)) fail("图片地址指向本机 / 内网 / 保留地址，已拦截，未发往 Marvis。")
+  const host = parsed.hostname.replace(/^\[|\]$/g, "")
+
+  // 字面 IP：SSRF 面最大，一条都不放。
+  if (isIP(host)) {
+    if (isPrivateIp(host)) fail("图片地址指向本机 / 内网 / 保留地址，已拦截，未发往 Marvis。")
+    return
+  }
+
+  let records
+  try {
+    records = await lookupImpl(host, { all: true, verbatim: true })
+  } catch {
+    fail("图片域名无法解析，未发往 Marvis。")
+  }
+  const resolved = records || []
+  if (!resolved.length) fail("图片域名没有可用解析结果，未发往 Marvis。")
+
+  // ⚠ 域名解析里**混进保留地址不整体拒**（issue #34）：开了 DNS 过滤 / sinkhole 的机器上，
+  //   同一域名常见「N 条公网 + 若干条 0.0.0.0」，逐条否决会把完全正常的外链图一起拦掉
+  //   （实测 cdn.jsdelivr.net → 3 条 Cloudflare IPv6 + 2 条 0.0.0.0，curl 走 IPv6 能取到图）。
+  //   只要**还有一条公网记录**就放行；一条不剩才拒。
+  //   字面 IP 那条分支仍然严格拒绝 —— SSRF 面没有变化。
+  // 残余风险：严格防 DNS rebinding 需要连接层固定已校验地址，当前实现不覆盖，在此明示。
+  const publicRecords = resolved.filter((record) => !isPrivateIp(record.address))
+  if (!publicRecords.length) {
+    fail("图片地址指向本机 / 内网 / 保留地址，已拦截，未发往 Marvis。")
   }
 }
 

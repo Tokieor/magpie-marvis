@@ -24,6 +24,7 @@ import {
   providerModels,
   canonicalModelId,
   displayModelId,
+  DISPLAY_BY_SLOT,
 } from "../src/context.mjs"
 import { mergeModels } from "../src/hooks/config.mjs"
 
@@ -192,4 +193,37 @@ test("canonicalModelId / displayModelId 的数字与槽位映射不回归", () =
   assert.equal(canonicalModelId("deepseek-v4-1-flash-261017"), "main-auto")
   assert.equal(displayModelId("main-auto"), "deepseek-v4-1-flash-261017")
   assert.equal(displayModelId("deepseek-v4-1-flash-261017"), "deepseek-v4-1-flash-261017")
+})
+
+// ── 推理挡位：metadata 必须声明，否则 DSH / Codex 的选择器会缺项 ──────────
+//
+// 2026-11-15：DSH 接入页给 DeepSeek 的挡位映射就是 low / high / max
+// （对比 workbuddy 的 `reasoningEfforts: {off, low, high, max}`）。插件不声明
+// `variants` 时，Magpie 只能落到客户端默认值 —— DSH 里 Marvis 的 4.1f 条目
+// 直接没有这组挡位，Codex 目录则生成 low/medium/high/ultra（缺 max）。
+// 直打上游实测：low / high / max 三挡都 200，且推理 token 随挡位递增。
+
+test("DeepSeek 两条 4.1f 条目声明 low/high/max 三挡（config 形状）", () => {
+  for (const slot of ["main-auto", "deepseek-v4-pro-external"]) {
+    const name = DISPLAY_BY_SLOT[slot]
+    const model = defaults[name]
+    assert.ok(model, `缺少模型：${name}`)
+    assert.deepEqual(Object.keys(model.variants).sort(), ["high", "low", "max"])
+    for (const effort of ["low", "high", "max"]) {
+      assert.equal(model.variants[effort].reasoningEffort, effort, `${name} 的 ${effort} 要映射到自身`)
+    }
+  }
+})
+
+test("DeepSeek 两条 4.1f 条目在 provider.models 里也带 variants（Codex 目录来源）", () => {
+  const models = providerModels()
+  for (const slot of ["main-auto", "deepseek-v4-pro-external"]) {
+    const name = DISPLAY_BY_SLOT[slot]
+    assert.deepEqual(Object.keys(models[name].variants).sort(), ["high", "low", "max"])
+  }
+})
+
+test("非推理模型不凭空声明 variants", () => {
+  assert.equal(defaults["HY-Vision-2.0-instruct"].variants, undefined)
+  assert.equal(providerModels()["HY-Vision-2.0-instruct"].variants, undefined)
 })

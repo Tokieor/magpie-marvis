@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url"
 import * as entry from "../index.mjs"
 import { _internal } from "../index.mjs"
 import { usage, usageWindow } from "../src/quota.mjs"
+import { nextResetAt } from "../src/hooks/usage.mjs"
 
 const { MarvisAuthPlugin } = entry
 
@@ -201,6 +202,15 @@ test("usage 构造器可用：至少造一条参与路由的窗口", () => {
   assert.equal(typeof value.plan, "string")
   assert.equal(value.windows.length, 1)
   assert.equal(Number.isFinite(value.windows[0].used), true)
+})
+
+test("下一个重置时间是北京时间 0 点（上游不返回，按固定规则推算）", () => {
+  // 北京 19:02（UTC 11:02）→ 次日 0 点 = 当天 16:00Z
+  assert.equal(nextResetAt(new Date("2026-11-15T11:02:00Z")), "2026-11-15T16:00:00.000Z")
+  // 北京 23:59（UTC 15:59）→ 再过一分钟就是 0 点
+  assert.equal(nextResetAt(new Date("2026-11-15T15:59:00Z")), "2026-11-15T16:00:00.000Z")
+  // 北京次日 00:30（UTC 前一日 16:30）→ 应当给再下一个 0 点
+  assert.equal(nextResetAt(new Date("2026-11-15T16:30:00Z")), "2026-11-16T16:00:00.000Z")
 })
 
 test("refresh 走串行锁（成对轮换的 token 不能被并发打掉）", () => {

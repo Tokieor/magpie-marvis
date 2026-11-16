@@ -283,3 +283,354 @@ test("loader 发出去的 Marvis-Scene 必须是 chat（否则 claude / gpt 全�
     s.restore()
   }
 })
+
+// ─────────────────────────────────────────────────────────────
+// system prompt 含 DSH 标识语句时的 403 诊断（issue #22）
+// ─────────────────────────────────────────────────────────────
+
+test("system prompt 命中 DSH 标识句 + 上游 403 → 改判成可读的 content_filtered", async () => {
+  const s = stubFetch(() => upstreamError(403, { code: 403, msg: "非法请求", type: "permission_error" }))
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [
+      { role: "system", content: "You are an AI agent powered by DeepSeek Harness." },
+      ...body.messages,
+    ]
+    req.init.body = JSON.stringify(body)
+    const res = await (await loaderOf()).fetch(req.url, req.init)
+    assert.equal(res.status, 403)
+    const out = await res.json()
+    assert.equal(out.error.code, "content_filtered", "命中标识句时要给出能指路的错误码")
+    assert.match(out.error.message, /QQ 群 451129479/, "要给出拿修复方法的入口")
+    assert.match(out.error.message, /非密钥或登录问题/, "要纠正「API 密钥无效」这个误导")
+  } finally {
+    s.restore()
+  }
+})
+
+test("任何 403「非法请求」都给 content_filtered —— 不再按指纹判定", async () => {
+  // 指纹在持续扩大（英文 → 中文 → 还没见过的写法），按指纹判定永远漏。
+  // 403 + 非法请求这个组合目前只出现在内容过滤上（模型无权限是 400 无效模型id），
+  // 所以宁可多给一句「进群」，也不把人甩回宿主那句「API 密钥无效」。
+  const s = stubFetch(() => upstreamError(403, { code: 403, msg: "非法请求", type: "permission_error" }))
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const res = await (await loaderOf()).fetch(req.url, req.init)
+    assert.equal(res.status, 403)
+    const out = await res.json()
+    assert.equal(out.error?.code, "content_filtered", "普通 system prompt + 403 非法请求也要指路")
+    assert.match(out.error.message, /QQ 群 451129479/)
+    assert.match(out.error.message, /非密钥或登录问题/)
+  } finally {
+    s.restore()
+  }
+})
+
+// ─────────────────────────────────────────────────────────────
+// 自动改写：那句标识句换成 DeepSeek-Harness，用户不用动 DSH 配置
+// ─────────────────────────────────────────────────────────────
+
+test("system prompt 里那句 DSH 标识会被自动改成 DeepSeek-Harness", async () => {
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [
+      { role: "system", content: "You are an AI agent powered by DeepSeek Harness." },
+      ...body.messages,
+    ]
+    req.init.body = JSON.stringify(body)
+    await (await loaderOf()).fetch(req.url, req.init)
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(
+      sent.messages[0].content,
+      "You are an AI agent powered by DeepSeek-Harness.",
+      "两个词之间要换成连字符（实测这样上游才放行）",
+    )
+    assert.equal(sent.messages[1].content, "ping", "其余消息一个字符都不能动")
+  } finally {
+    s.restore()
+  }
+})
+
+test("OpenCode 2 的身份句 → 自动改写成 working in OpenCode（用户不用去改客户端二进制）", async () => {
+  // 上游把 `You are an AI agent running in OpenCode` 当内容指纹（实测 403 非法请求）。
+  // 作者给的办法是改 opencode.exe 里的字节；插件在请求体这一层改更省事，且对任何客户端都生效。
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [
+      {
+        role: "system",
+        content: "You are an AI agent running in OpenCode, a coding agent harness.\n\nYou help the user with coding tasks.",
+      },
+      ...body.messages,
+    ]
+    req.init.body = JSON.stringify(body)
+    await (await loaderOf()).fetch(req.url, req.init)
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(
+      sent.messages[0].content,
+      "You are an AI agent working in OpenCode, a coding agent harness.\n\nYou help the user with coding tasks.",
+      "只换动词，句子其余部分一个字节都不能动",
+    )
+  } finally {
+    s.restore()
+  }
+})
+
+test("OpenCode 身份句不在首行 → 不改（上游只拦首行，改了是多余改动）", async () => {
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    const text = "preamble.\nYou are an AI agent running in OpenCode."
+    body.messages = [{ role: "system", content: text }, ...body.messages]
+    req.init.body = JSON.stringify(body)
+    await (await loaderOf()).fetch(req.url, req.init)
+    assert.equal(JSON.parse(s.calls[0].init.body).messages[0].content, text)
+  } finally {
+    s.restore()
+  }
+})
+
+test("不涉及那句的 system prompt 原样发出", async () => {
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [{ role: "system", content: "You are a helpful assistant." }, ...body.messages]
+    req.init.body = JSON.stringify(body)
+    await (await loaderOf()).fetch(req.url, req.init)
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(sent.messages[0].content, "You are a helpful assistant.")
+  } finally {
+    s.restore()
+  }
+})
+
+test("用户已经在 DSH 侧修好（连字符 / 破折号 / 关掉整句）→ 插件一个字节都不改", async () => {
+  // 这是「门禁」而不是「无差别替换」的关键：只认会被拦的原始形态，用户的修复必须原样保留
+  const alreadyFixed = [
+    "You are an AI agent powered by DeepSeek-Harness. Your working directory is /repo.",
+    "You are an AI agent powered by DeepSeek — Harness. Your working directory is /repo.",
+    "You are a coding agent powered by the deepseek model.",
+  ]
+  for (const text of alreadyFixed) {
+    const s = stubFetch(() => upstreamOk())
+    try {
+      const req = requestFor("deepseek-v4-1-flash-261017")
+      const body = JSON.parse(req.init.body)
+      body.messages = [{ role: "system", content: text }, ...body.messages]
+      req.init.body = JSON.stringify(body)
+      await (await loaderOf()).fetch(req.url, req.init)
+      const sent = JSON.parse(s.calls[0].init.body)
+      assert.equal(
+        sent.messages[0].content,
+        text,
+        `已经修过的形态不许再动：${text.slice(0, 42)}…`,
+      )
+    } finally {
+      s.restore()
+    }
+  }
+})
+// ─────────────────────────────────────────────────────────────
+// Claude Code 身份句的 403 诊断（issue #26，错误码 4100406）
+// ─────────────────────────────────────────────────────────────
+
+test("Claude Code 身份句 + 403 → 改写成 Claude-Code，且诊断指回原始身份句", async () => {
+  const s = stubFetch(() => upstreamError(403, { code: 4100406, msg: "非法请求" }))
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    const claudeIdentity = "You are Claude Code, Anthropic's official CLI for Claude."
+    body.messages = [{ role: "system", content: claudeIdentity }, ...body.messages]
+    req.init.body = JSON.stringify(body)
+    const res = await (await loaderOf()).fetch(req.url, req.init)
+    assert.equal(res.status, 403)
+    const out = await res.json()
+    assert.equal(out.error.code, "content_filtered", "命中 Claude 身份句时要给出能指路的错误码")
+    assert.match(out.error.message, /QQ 群 451129479/, "要给出拿修复方法的入口")
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(
+      sent.messages[0].content,
+      "You are Claude-Code, Anthropic's official CLI for Claude.",
+      "0.2.32 起会在本地把身份短语改写成连字符形态（改写后仍 403 时才走上面那条诊断）",
+    )
+  } finally {
+    s.restore()
+  }
+})
+
+// ─────────────────────────────────────────────────────────────
+// 同一类内容过滤：Codex Desktop / Claude Desktop 的身份句
+// 2026-11-15 直打上游实测（只换 system prompt 第一句，其余完全一样）：
+//   Codex 原句 → 403；`Codex-CLI` → 200
+//   Claude 原句 → 403；`Claude-Code` → 200
+// ─────────────────────────────────────────────────────────────
+
+test("Codex Desktop 的身份句会被自动改写成 Codex-CLI", async () => {
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [
+      {
+        role: "system",
+        content:
+          "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. " +
+          "Codex CLI is an open source project led by OpenAI.",
+      },
+      ...body.messages,
+    ]
+    req.init.body = JSON.stringify(body)
+    await (await loaderOf()).fetch(req.url, req.init)
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(
+      sent.messages[0].content,
+      "You are a coding agent running in the Codex-CLI, a terminal-based coding assistant. " +
+        "Codex CLI is an open source project led by OpenAI.",
+      "只改开头身份短语里的那个空格，后面的 `Codex CLI` 原样保留",
+    )
+    assert.equal(sent.messages[1].content, "ping", "其余消息一个字符都不能动")
+  } finally {
+    s.restore()
+  }
+})
+
+test("Claude Desktop 的身份句会被自动改写成 Claude-Code", async () => {
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [
+      {
+        role: "system",
+        content:
+          "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+      },
+      ...body.messages,
+    ]
+    req.init.body = JSON.stringify(body)
+    await (await loaderOf()).fetch(req.url, req.init)
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(
+      sent.messages[0].content,
+      "You are Claude-Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+      "只改 `Claude Code` 这一处，第二处 `Claude` 不动",
+    )
+    assert.equal(sent.messages[1].content, "ping", "其余消息一个字符都不能动")
+  } finally {
+    s.restore()
+  }
+})
+
+test("客户端已经写成 Codex-CLI / Claude-Code → 一个字节都不改", async () => {
+  const alreadyFixed = [
+    "You are a coding agent running in the Codex-CLI, a terminal-based coding assistant.",
+    "You are Claude-Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+  ]
+  for (const text of alreadyFixed) {
+    const s = stubFetch(() => upstreamOk())
+    try {
+      const req = requestFor("deepseek-v4-1-flash-261017")
+      const body = JSON.parse(req.init.body)
+      body.messages = [{ role: "system", content: text }, ...body.messages]
+      req.init.body = JSON.stringify(body)
+      await (await loaderOf()).fetch(req.url, req.init)
+      const sent = JSON.parse(s.calls[0].init.body)
+      assert.equal(sent.messages[0].content, text, `已经修过的形态不许再动：${text.slice(0, 42)}…`)
+    } finally {
+      s.restore()
+    }
+  }
+})
+// ─────────────────────────────────────────────────────────────
+// 中文 / 本地化身份句（2026-11-16 复测）
+//
+// 判据是「**system 首行 + 词对 + 单个空格**」，不是「三句英文模板」：
+//   system 第 1 行 `你是一个由 DeepSeek Harness 驱动的 AI 智能体。`   → 403 非法请求
+//   system 第 1 行 全小写 / 句末加 !                               → 403
+//   system 第 2 行 / user 角色里的同一句                            → 200
+// ⇒ 旧版只认英文整句，中文写法既不改写也不诊断，用户看到的是原始 403
+//   （宿主再翻成「API 密钥无效」）—— 这就是本条用例要锁住的回归。
+// ─────────────────────────────────────────────────────────────
+
+test("中文身份句写在 system 首行 → 自动改写，且 403 改判成 content_filtered", async () => {
+  const s = stubFetch(() => upstreamError(403, { code: 403, msg: "非法请求", type: "permission_error" }))
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [{ role: "system", content: "你是一个由 DeepSeek Harness 驱动的 AI 智能体。" }, ...body.messages]
+    req.init.body = JSON.stringify(body)
+    const res = await (await loaderOf()).fetch(req.url, req.init)
+    const sent = JSON.parse(s.calls[0].init.body)
+    assert.equal(sent.messages[0].content, "你是一个由 DeepSeek-Harness 驱动的 AI 智能体。", "中文写法同样要把词间空格换成连字符")
+    assert.equal(res.status, 403)
+    assert.equal((await res.json()).error.code, "content_filtered", "中文写法不许退化成原始 403")
+  } finally {
+    s.restore()
+  }
+})
+
+test("身份句不在 system 首行（第 2 行 / user 角色）→ 一个字节都不改", async () => {
+  const cases = [
+    [{ role: "system", content: "你是一个助手。\n你是一个由 DeepSeek Harness 驱动的 AI 智能体。" }, { role: "user", content: "ping" }],
+    [{ role: "user", content: "你是一个由 DeepSeek Harness 驱动的 AI 智能体。" }],
+    [{ role: "system", content: "You are a helpful assistant." }, { role: "assistant", content: "You are an AI agent powered by DeepSeek Harness." }, { role: "user", content: "ping" }],
+  ]
+  for (const messages of cases) {
+    const s = stubFetch(() => upstreamOk())
+    try {
+      const req = requestFor("deepseek-v4-1-flash-261017")
+      const body = JSON.parse(req.init.body)
+      body.messages = messages
+      req.init.body = JSON.stringify(body)
+      await (await loaderOf()).fetch(req.url, req.init)
+      const sent = JSON.parse(s.calls[0].init.body)
+      assert.deepEqual(sent.messages, messages, "上游本来就放行的位置，不许改（改了是多余改动）")
+    } finally {
+      s.restore()
+    }
+  }
+})
+
+test("全小写 / 句末加感叹号的身份句照样会被拦，也照样要改写", async () => {
+  const variants = [
+    ["you are an ai agent powered by deepseek harness.", "you are an ai agent powered by deepseek-harness."],
+    ["You are an AI agent powered by DeepSeek Harness!", "You are an AI agent powered by DeepSeek-Harness!"],
+  ]
+  for (const [input, expected] of variants) {
+    const s = stubFetch(() => upstreamOk())
+    try {
+      const req = requestFor("deepseek-v4-1-flash-261017")
+      const body = JSON.parse(req.init.body)
+      body.messages = [{ role: "system", content: input }, ...body.messages]
+      req.init.body = JSON.stringify(body)
+      await (await loaderOf()).fetch(req.url, req.init)
+      const sent = JSON.parse(s.calls[0].init.body)
+      assert.equal(sent.messages[0].content, expected)
+    } finally {
+      s.restore()
+    }
+  }
+})
+
+test("Codex 身份句被拦时也要给 content_filtered 诊断（旧版只有 DSH 与 Claude 两条分支）", async () => {
+  const s = stubFetch(() => upstreamError(403, { code: 403, msg: "非法请求", type: "permission_error" }))
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    const body = JSON.parse(req.init.body)
+    body.messages = [{ role: "system", content: "You are a coding agent running in the Codex CLI, a terminal-based coding assistant." }, ...body.messages]
+    req.init.body = JSON.stringify(body)
+    const res = await (await loaderOf()).fetch(req.url, req.init)
+    assert.equal(res.status, 403)
+    assert.equal((await res.json()).error.code, "content_filtered")
+  } finally {
+    s.restore()
+  }
+})
+

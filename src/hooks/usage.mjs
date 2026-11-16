@@ -20,6 +20,26 @@ const WALLET_URL = `${BASE}/v3/marvis_get_wallet`
 const fmt = (n) => (Number.isFinite(Number(n)) ? Number(n).toLocaleString("en-US") : "0")
 
 /**
+ * 下一个重置时间：Marvis 令牌额度**按北京时间每天 0 点**重置（issue #12 确认）。
+ *
+ * ⚠ 上游 `/v3/marvis_get_wallet` **不返回**重置时间（实测响应只有 total/used/frozen/avail/cost/status），
+ *   所以这里按固定规则推算。规则若变，只改这一个函数。
+ * ⚠ `resetsAt` **只影响卡片显示**：路由排序只读 `used`，给了它也不会让这个号排得更前。
+ * ⚠ 必须返回 ISO —— `usageWindow()` 会对非 ISO 直接抛（见 src/quota.mjs 的 TIME_KEYS）。
+ *
+ * @param {Date} [now]
+ * @returns {string}
+ */
+export function nextResetAt(now = new Date()) {
+  const CN_OFFSET_MS = 8 * 3600_000
+  // 把「北京时间」映射到 UTC 字段上算，不依赖运行机器的时区
+  const cn = new Date(now.getTime() + CN_OFFSET_MS)
+  const todayMidnightCn = Date.UTC(cn.getUTCFullYear(), cn.getUTCMonth(), cn.getUTCDate()) - CN_OFFSET_MS
+  const next = now.getTime() < todayMidnightCn ? todayMidnightCn : todayMidnightCn + 86_400_000
+  return new Date(next).toISOString()
+}
+
+/**
  * 上游失败时留一份现场（不含 token），方便排查「卡片刻度不更新」。
  * @param {unknown} err
  */
@@ -87,6 +107,7 @@ export function usageHook() {
           amount: used,
           limit: total,
           unit: "tokens",
+          resetsAt: nextResetAt(),
           display: `${fmt(avail)} 可用 / 共 ${fmt(total)}`,
         }),
         // 冻结额度单独一条，只上卡片（不影响路由）

@@ -108,13 +108,14 @@ const TABLE = [
   //   漏了它 `staticModels()` 会写 `attachment:false`、`providerModels()` 会写
   //   `capabilities.input.image:false`，magpie 在入口就把带图请求 400 掉，
   //   用户看到的是「deepseek flash 用不了图片」——而上游其实 200。
-  ["main-auto", "deepseek-v4-1-flash-261017", 1_000_000, { reasoning: true, tools: true, vision: true }],
-  // ⚠ 显示名跟**实测**走，不跟名字暗示走：2026-11-15 两个 QQ 账号实测，该槽位回的是
+  //   `efforts` 来自上游 0.2.31：这个槽位支持 low/high/max 三档推理强度。
+  ["main-auto", "deepseek-v4-1-flash-261017", 1_000_000, { reasoning: true, tools: true, vision: true, efforts: ["low", "high", "max"] }],
+  // ⚠ 显示名跟**实测**走，不跟名字暗示走：2026-11-15/16 两个 QQ 账号实测，该槽位回的是
   //   `deepseek-v4-flash-ga-260731`（且**不带推理**），不是 pro。
-  //   上游 0.2.23 把它改成 `deepseek-v4-1-flash-261017 (防降级)`，理由是「固定映射能拿到 4.1f」——
-  //   这个结论在我们的账号上不成立，照抄会把显示名写成 A、实际跑 B，正是「模型对不上」警告的来源。
-  //   后缀留着，是为了让它和 `hy3-preview-agent`（同样回 260731）在列表里能区分。
-  ["deepseek-v4-pro-external", "deepseek-v4-flash-ga-260731 (pro-external 槽位)", 1_000_000, { reasoning: true, tools: true }],
+  //   上游 0.2.23 起把它写成 `deepseek-v4-1-flash-261017 (防降级)` / `-antidowngrade`，
+  //   理由是「固定映射能拿到 4.1f」——这个结论在我们的账号上不成立，照抄会把显示名写成 A、
+  //   实际跑 B，正是「模型对不上」警告的来源。后缀留着，是为了和 `hy3-preview-agent`（同样回 260731）区分。
+  ["deepseek-v4-pro-external", "deepseek-v4-flash-ga-260731 (pro-external slot)", 1_000_000, { reasoning: true, tools: true, vision: true, efforts: ["low", "high", "max"] }],
   ["hy3-preview-agent", "deepseek-v4-flash-ga-260731", 1_000_000, { reasoning: true, tools: true }],
 
   // ── 其他厂商 ─────────────────────────────────────────────────
@@ -159,6 +160,11 @@ export const DISPLAY_BY_SLOT = Object.freeze(
  */
 const LEGACY_DISPLAY_ALIASES = Object.freeze({
   "deepseek-v4-pro-202606": "deepseek-v4-pro-external",
+  // 0.2.23 / 0.2.24 用过的带中文后缀的显示名，以及上游 0.2.25+ 的 ASCII 名 ——
+  // 已经写好它们的路由组不能因此 400。
+  "deepseek-v4-1-flash-261017-antidowngrade": "deepseek-v4-pro-external",
+  // 本 fork 0.2.28 用过的中文后缀名（非 ASCII 会让 Copilot 卡住，见 issue #15）
+  "deepseek-v4-flash-ga-260731 (pro-external 槽位)": "deepseek-v4-pro-external",
   "deepseek-v4-1-flash-261017 (防降级)": "deepseek-v4-pro-external",
 })
 
@@ -207,6 +213,17 @@ export function displayModelId(model) {
 }
 
 /**
+ * 推理挡位 → OpenCode `variants` 形状（键是挡位名，值映射成请求里的 `reasoningEffort`）。
+ *
+ * Magpie 用这份 metadata 生成 Codex 的 `supported_reasoning_levels` 与 DSH 的
+ * `reasoningEfforts`；不声明就会落到客户端默认值 —— DSH 的 DeepSeek 模型会因此
+ * 缺 low / high / max 三挡（2026-11-15 实测 Marvis 的 4.1f 就这三挡）。
+ */
+function variantsOf(efforts) {
+  return Object.fromEntries(efforts.map((effort) => [effort, { reasoningEffort: effort }]))
+}
+
+/**
  * 静态模型表（`config` 钩子用）—— 没人登录时也能显示。
  *
  * ⚠ 这是 **OpenCode `#quick` 形状**，与 `provider.models` 返回的形状**不同**：
@@ -231,6 +248,7 @@ export function staticModels() {
       },
       tool_call: Boolean(cap.tools),
       reasoning: Boolean(cap.reasoning),
+      ...(cap.reasoning && cap.efforts ? { variants: variantsOf(cap.efforts) } : {}),
       limit: { context, output: DEFAULT_OUTPUT },
       ...(cap.search ? { searches: true } : {}),
     }
@@ -272,6 +290,7 @@ export function providerModels() {
         },
         output: { text: true },
       },
+      ...(cap.reasoning && cap.efforts ? { variants: variantsOf(cap.efforts) } : {}),
       limit: { context, output: DEFAULT_OUTPUT },
       ...(cap.search ? { searches: true } : {}),
     }
