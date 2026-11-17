@@ -84,7 +84,9 @@ function accounts() {
 async function servedModel(acct, slot) {
   const res = await fetch(`${BASE_V1}/chat/completions`, {
     method: "POST",
-    headers: llmHeaders(acct, { scene: "preload_summary", agentTag: "auto_discovery" }),
+    // ⚠ 必须与 loader 发的头一致（chat / main_agent）：
+    //   `preload_summary` 场景下 claude / gpt 一律 4130001，探针量到的就不是插件的真实行为了
+    headers: llmHeaders(acct, { scene: "chat", agentTag: "main_agent" }),
     body: JSON.stringify({
       model: slot,
       stream: true,

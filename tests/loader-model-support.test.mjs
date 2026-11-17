@@ -992,3 +992,20 @@ test("OpenCode 身份句被拦时也要给 content_filtered 诊断（诊断集�
     s.restore()
   }
 })
+
+test("上游准入闸门：Marvis-Scene 必须是 chat、AgentTag 必须是 main_agent", async () => {
+  // 上游把「场景不放行」和「模型真不存在」共用 4130001 一个码：
+  // preload_summary / auto_discovery 这个场景只放行腾讯自家的 deepseek / hunyuan，
+  // claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4 会一律被判成「无效模型id」。
+  const s = stubFetch(() => upstreamOk())
+  try {
+    const req = requestFor("deepseek-v4-1-flash-261017")
+    await (await loaderOf()).fetch(req.url, req.init)
+    const sent = s.calls[0].init.headers
+    const pick = (name) => sent[name] ?? sent[name.toLowerCase()] ?? Object.entries(sent).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1]
+    assert.equal(pick("Marvis-Scene"), "chat", "场景必须是 chat，否则 claude / gpt 三个模型全 4130001")
+    assert.equal(pick("Marvis-AgentTag"), "main_agent")
+  } finally {
+    s.restore()
+  }
+})
