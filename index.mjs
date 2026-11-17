@@ -28,10 +28,10 @@ import { authorizeUrl } from "./src/marvis/login.mjs"
 import { startRelayLogin } from "./src/marvis/relay.mjs"
 import { PROVIDER, PROVIDER_NAME, BASE_V1, staticModels, providerModels, DEFAULT_MODEL } from "./src/context.mjs"
 
-export const MarvisAuthPlugin = async (_input) => {
+export const MarvisAuthPlugin = async (input, options) => {
   return {
     config: configHook(),
-    auth: authHooks(),
+    auth: authHooks(input, options),
 
     provider: {
       id: PROVIDER,

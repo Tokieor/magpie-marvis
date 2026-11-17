@@ -25,6 +25,7 @@ import {
   canonicalModelId,
   displayModelId,
   DISPLAY_BY_SLOT,
+  expectedServedModel,
 } from "../src/context.mjs"
 import { mergeModels } from "../src/hooks/config.mjs"
 
@@ -226,4 +227,19 @@ test("DeepSeek 两条 4.1f 条目在 provider.models 里也带 variants（Codex 
 test("非推理模型不凭空声明 variants", () => {
   assert.equal(defaults["HY-Vision-2.0-instruct"].variants, undefined)
   assert.equal(providerModels()["HY-Vision-2.0-instruct"].variants, undefined)
+})
+
+// ─────────────────────────────────────────────────────────────
+// 自查探针的「应该服务哪个上游模型」（issue #43）
+//
+// 显示名里有**我们加的后缀**（`-antidowngrade`），上游回的 model 从来没有它。
+// 探针若直接拿 DISPLAY_BY_SLOT 比，会把正常的号全判成「被降级」—— 这条锁住那个错误。
+// ─────────────────────────────────────────────────────────────
+
+test("expectedServedModel：剥掉我们加的显示后缀，未知槽位原样返回", () => {
+  assert.equal(expectedServedModel("main-auto"), "deepseek-v4-1-flash-261017")
+  // 本 fork 的实测值：该槽位回 `deepseek-v4-flash-ga-260731`，不是 4.1f（三个账号 × 三轮测过）
+  assert.equal(expectedServedModel("deepseek-v4-pro-external"), "deepseek-v4-flash-ga-260731")
+  assert.equal(expectedServedModel("hy3-preview-agent"), "deepseek-v4-flash-ga-260731", "真实模型名原样保留")
+  assert.equal(expectedServedModel("not-a-slot"), "not-a-slot")
 })

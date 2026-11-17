@@ -39,7 +39,10 @@ test("pro-external 的显示名跟实测走（不是 4.1f，是 260731），且�
   // 2026-11-15/16 两个 QQ 账号实测：该槽位回 deepseek-v4-flash-ga-260731、不带推理。
   // 上游 0.2.23 起把显示名写成 `deepseek-v4-1-flash-261017 (防降级)` / `-antidowngrade`，
   // 与实测不符，本 fork 不采纳 —— 显示名必须是实测值，否则「名字 A 实际 B」的混淆会再来一次。
-  assert.equal(displayModelId("deepseek-v4-pro-external"), "deepseek-v4-flash-ga-260731 (pro-external slot)")
+  // 后缀用连字符拼、不带空格与括号：issue #15 说显示名带空格 / 非 ASCII 会让 Copilot 卡在回复阶段
+  assert.equal(displayModelId("deepseek-v4-pro-external"), "deepseek-v4-flash-ga-260731-proexternal")
+  assert.equal(canonicalModelId("deepseek-v4-flash-ga-260731-proexternal"), "deepseek-v4-pro-external")
+  // 本 fork 0.2.28 用过的带空格版：老路由组里的名字仍要归一
   assert.equal(canonicalModelId("deepseek-v4-flash-ga-260731 (pro-external slot)"), "deepseek-v4-pro-external")
   // 上游用过的两个名字，以及本 fork 早期的中文后缀名：从任何一边切过来都要能归一
   assert.equal(canonicalModelId("deepseek-v4-1-flash-261017 (防降级)"), "deepseek-v4-pro-external")
@@ -48,7 +51,7 @@ test("pro-external 的显示名跟实测走（不是 4.1f，是 260731），且�
   // 两条 4.1f / 260731 条目并存但不能塌成一个槽位
   assert.notEqual(
     canonicalModelId("deepseek-v4-1-flash-261017"),
-    canonicalModelId("deepseek-v4-flash-ga-260731 (pro-external slot)"),
+    canonicalModelId("deepseek-v4-flash-ga-260731-proexternal"),
     "两条条目不能塌成同一个槽位（塌了就不是替代路由了）",
   )
 })
@@ -56,6 +59,6 @@ test("pro-external 的显示名跟实测走（不是 4.1f，是 260731），且�
 test("模型显示名必须是纯 ASCII —— 非 ASCII 会让部分客户端（Copilot）在回复阶段卡死", () => {
   // issue #15：显示名带全角括号与空格时，VS Code Copilot 选它会一直停在回复中，DSH 下正常。
   for (const [slot, name] of Object.entries(DISPLAY_BY_SLOT)) {
-    assert.match(name, /^[\x20-\x7e]+$/, `槽位 ${slot} 的显示名含非 ASCII 字符：${name}`)
+    assert.match(name, /^[\x21-\x7e]+$/, `槽位 ${slot} 的显示名含非 ASCII / 空白字符：${name}`)
   }
 })

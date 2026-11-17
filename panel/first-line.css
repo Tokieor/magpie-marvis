@@ -1,0 +1,112 @@
+/* 首行文本面板 —— 一行一个按钮；输入框只在弹出的对话框里。
+   颜色/字体/输入框交给 bridge 的 :where() 基础样式，深色/浅色与语言切换自动跟随 magpie。 */
+
+.fl {
+  padding: 2px 0 4px;
+}
+
+.fl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fl-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--magpie-fg-2, inherit);
+}
+
+.fl-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--magpie-muted, #888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fl-btn {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--magpie-line, #3a3a3a);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.fl-btn:hover {
+  background: var(--magpie-hover, rgba(127, 127, 127, 0.14));
+}
+
+.fl-primary {
+  border-color: var(--magpie-accent, #4c8dff);
+  color: var(--magpie-accent, #4c8dff);
+}
+
+.fl-status {
+  margin: 4px 0 0;
+  min-height: 14px;
+  font-size: 11px;
+  color: var(--magpie-green, #3ba55d);
+}
+
+/* 对话框：点「设置…」才出现，面板本身不占高度 */
+.fl-dialog {
+  width: min(520px, calc(100vw - 48px));
+  border: 1px solid var(--magpie-line, #3a3a3a);
+  border-radius: 10px;
+  padding: 16px;
+  background: var(--magpie-bg, #1e1e1e);
+  color: inherit;
+}
+
+.fl-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.fl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fl-form h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.fl-form .muted {
+  margin: 0;
+  font-size: 12px;
+  color: var(--magpie-muted, #888);
+  line-height: 1.5;
+}
+
+.fl-form input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--magpie-line, #3a3a3a);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+.fl-form input::placeholder {
+  color: var(--magpie-faint, #777);
+}
+
+.fl-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}

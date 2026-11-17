@@ -1,6 +1,201 @@
 # 更新记录
 
-## 0.2.39 — 2026-11-16
+## 0.2.52 — 2026-11-17
+
+**并入上游 0.2.38 – 0.2.51（身份句改写整条链路重做）+ 保留本 fork 的三处独立修复**
+
+- 并入上游：身份句改写从「正则形状匹配」改成**整句白名单**（只换主流客户端的默认首句，
+  用户自己改过的首句一个字节都不动 —— 不跟用户的修改打架，前缀也稳定，上游前缀缓存照常命中）；
+  新增 `firstLine` 兜底 —— 被 403 拦下时换一句不含产品名的首行**重试一次**，以及「每个请求都换」
+  的强制模式；两个开关由 magpie 原生渲染在供应商卡片里（`auth.options` + `placement: "top"`），
+  改完不用重启；首行文本在「设置 → 插件 → 选项」里改，键名就是中文 `提示词首行替换`
+- 并入上游：`scripts/probe-served-model.mjs` 降级自查探针；`deepseek-v4-pro-external` 补 `vision`；
+  DNS 记录里混 `0.0.0.0` 时只要有公网记录就放行（issue #34）
+- ⚠ **本 fork 保留 ①**：`Marvis-Scene` 仍固定 `chat` / `main_agent`。上游到 0.2.51 还在用
+  `preload_summary` / `auto_discovery` —— 那个场景只放行腾讯自家的 deepseek / hunyuan，
+  `claude-sonnet-4-6` / `claude-opus-4-6` / `gpt-5.4` 会一律回 `4130001 无效模型id`
+  （上游把「场景不放行」和「模型不存在」共用一个码，所以看起来像模型下线）。本 fork 0.2.27 起已改
+- ⚠ **本 fork 保留 ②**：白名单里补 **OpenCode**（`You are an AI agent running in OpenCode, …`
+  → `You are an AI agent, running in OpenCode, …`，实测 403 → 200）。上游 11 条白名单里没有它 ——
+  这正是本 fork 最初要解决的问题
+- ⚠ **本 fork 保留 ③**：局域网扫码登录（`src/marvis/relay.mjs`，NAS / Docker / 无浏览器环境用），
+  上游没有这个功能；图片 SSRF 预检的 `MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS=1` 开关同样保留
+- 显示名再改一次：`deepseek-v4-pro-external` → `deepseek-v4-flash-ga-260731-proexternal`。
+  上游 0.2.36 把该槽位写成 `deepseek-v4-1-flash-261017-antidowngrade`（称实测回 4.1f），
+  但本机三个 QQ 账号 × 三轮实测（11-15 / 11-16 / 11-17）回的一直是 `deepseek-v4-flash-ga-260731`
+  且不带推理。同时按 issue #15 去掉空格与括号 —— 显示名带空白 / 非 ASCII 会让 VS Code Copilot
+  卡在回复阶段。四种历史写法全部保留归一
+- 版本号说明：本 fork 的 0.2.38 / 0.2.39 与上游同号但内容不同，CHANGELOG 里标成「（fork 侧）」，
+  本条起与上游错开（上游 0.2.51 → 本 fork 0.2.52）
+- 验收：测试 207 项中 203 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过；
+  网关实测 OpenCode / DSH / Codex / Claude 四种身份句首行全部 200，`claude-opus-4-6` 等非腾讯模型可选中
+
+## 0.2.51 — 2026-11-17
+
+**改（选项的键名换成中文：`提示词首行替换`）**
+
+- 那个键是我们自己起的名字（magpie 只要求选项的值是一个对象），所以直接改成中文：
+  `{ "提示词首行替换": "You are a helpful assistant." }` —— 设置 → 插件 → 本插件「选项」框里
+  看到的就是这一句，把引号里换成自己的话、保存即可，不用猜 `text` 是什么
+- 默认值仍然写在这（示例即默认）；老版本存过的 `{"text": …}`（0.2.50）与
+  `{"firstLine": {"text": …}}`（≤0.2.49）继续读，不用手动迁移
+- 面板写回同一个键，并顺手收掉老的 `text` / `firstLine`
+
+## 0.2.50 — 2026-11-17
+
+**改（首行文本改成在「设置 → 插件」那一行的选项框里改：一个键 `text`，默认值就写在那）**
+
+- 插件选项从 `{ "firstLine": { "mode": "blocked", "text": "" } }` 瘦成一个键：`{ "text": "You are a helpful assistant." }`
+  —— 那个框是 magpie 的通用 JSON 编辑器（值必须是对象，写字符串会被拒），键越少越好改；
+  示例就是**默认值**，点「选项」看到的那句就是要用的那句，把引号里换成自己的话、保存即可
+- loader 优先读 `options.text`；老版本存下的 `{ "firstLine": { "text": … } }` 继续读（不用手动迁移）
+- `mode` 不再写进 JSON：改不改由卡片上那两个开关决定（`first_line_fallback` / `first_line_always`）
+- 面板（供应商编辑器里的「首行文本」）同步读写 `text`，保存时把老的 `firstLine` 键收掉
+- 开关的 label 加长到 43 字：magpie 的选项行按内容宽度排，太短整行会缩到中间
+
+## 0.2.49 — 2026-11-17
+
+**修复（选项的第二行还是压到「模型」上：一条开关只能占一行）**
+
+- 两条开关的 `description` 全部删掉，说明并进 `label`（≤60 字符）。magpie 的 `.plugin-options`
+  是 flex 的 `.stack`，但每个选项**只预留一行高度**：多画一行 description，那一行就压到下一个
+  field（模型列表）上 —— 0.2.47 / 0.2.48 的两次缩短都只是把溢出变短，没消除
+- 插件的渲染改不了（`pluginOptionsField` 在 magpie 里），能改的只有「一条只占一行」
+- 用例改成锁这条：任一开关出现 `description` / `descriptions` 就失败
+
+## 0.2.48 — 2026-11-17
+
+**修复（说明文字压到模型行）+ 改版（首行文本：点按钮弹输入框）**
+
+- 两条开关的 `description` 缩短到**一行画得完**（zh ≤48 字符、en ≤120）：magpie 按一行算行高，
+  第二行不会撑高，会直接压在下面的「模型」区块上（实测截图）。用例加了这条上限防回归。
+- 首行文本面板改成**一行 + 按钮**：`首行文本  当前值  [设置…]`，点「设置…」弹出原生 `<dialog>`，
+  里面是输入框和「取消 / 保存」两个按钮；保存时才写一次 `firstLine.text`（`options.set` 是整份替换、
+  一秒最多一次，仍然整份展开写回）。面板本身只有一行高，不再把编辑器撑高。
+- 面板用例同步：写回挂在「保存」按钮的 submit 上，禁止边打字边写（原来是 1.2s 防抖）。
+
+## 0.2.47 — 2026-11-17
+
+**修复（开关没置顶：漏了 `placement: "top"`）**
+
+- 我上一版说「插件侧无法置顶」是**错的**：magpie 早就支持 `auth.options[i].placement: "top"`，
+  写了就画在**账号下面、路由上面**（magpie 仓库 issue 5269；渲染侧 `pluginOptionsField(sub, top)`
+  按 `o.placement === "top"` 分组，Go 侧字段 `json:"placement,omitempty"`）
+- 两条开关（`first_line_fallback` / `first_line_always`）都加上 `placement: "top"`
+- README 更正对应的错误说法；用例加一条断言「每条都必须 top」，防止以后新增开关漏掉
+- ⚠ 面板（首行文本输入框）**没有**位置字段，仍只能追加在编辑器末尾 —— 想让输入框也置顶需要上游支持
+- 验收：测试 185 项中 181 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.46 — 2026-11-17
+
+**新增（首行文本的输入框：供应商卡片里的面板）**
+
+- 开关已经由 magpie 原生渲染（`auth.options`，只支持布尔）；**文本没有原生控件**，
+  所以补一个 `magpie.panels`（slot: provider）面板：一个输入框 + 回车/失焦自动保存，
+  写的是同一份 `firstLine.text`，与「每个请求都改写首行」开关配套
+- 位置由 magpie 决定：`app.js` 里 `ed.append(slot)` 在**编辑器末尾、取消/保存之上**，
+  开关那两行在它的上方（`pluginOptionsField` 固定插在「高级」之前）—— 两者都无法置顶
+- 面板只在 provider 编辑器里出现；`options.set` 是整份替换 + 一秒最多一次，
+  所以写回展开读到的整份 opts，输入防抖 1.2s
+- 新增 `tests/panel-manifest.test.mjs`（5 项）：清单形状 / files 白名单带面板文件（漏了就是空白）/
+  必须加载 bridge 且用 options.get+set / 写回保留别的键 / 面板不许自己 fetch
+- 验收：测试 184 项中 180 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过；
+  `npm pack --dry-run` 里能看到 `panel/first-line.{html,js,css}`
+
+## 0.2.45 — 2026-11-17
+
+**修复（开关放错层：0.2.44 的 provider 面板换成 magpie 自带的 `auth.options` 开关）**
+
+- 0.2.44 用 `magpie.panels` 在供应商编辑器里开了个 iframe 面板 —— 机制没写错，但对这件事是**绕远路**：
+  面板清单要窗口重载才刷新，装完看不出变化；而且它要维护一套 HTML/JS。
+- magpie 本来就有这个扩展点（`auth.options`，#2038，`internal/plugin/host.js` 的 `optionsOf`）：
+  插件声明 `{key, label, description?, default?, confirm?, labels?, descriptions?, confirms?}`，
+  magpie 在**供应商编辑器**里每条画一行 Off/On，点一下立刻保存，插件用
+  `input.magpie.option("marvis", key)` 现读 —— **不用重启、不用窗口重载**
+- 两个开关：`first_line_fallback`（默认开，被 403 拦下时换兜底句重试一次）、
+  `first_line_always`（默认关，每个请求都改写；开了先弹一次确认）
+- 自定义首行文本仍在插件选项 JSON 里（`firstLine.text`，留空 = 内置兜底句）
+- 删掉 `magpie.panels` / `panel/*` / 对应的 4 个面板用例；新增 `tests/plugin-options.test.mjs`（4 项），
+  按 magpie 的校验规则锁住开关形状（key 正则、label ≤60、default 布尔、zh 文案、最多 16 条）
+- 验收：测试 179 项中 175 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.44 — 2026-11-17
+
+**新增（provider 编辑器里的「首行改写」面板：开关 + 输入框，不用手写 JSON）**
+
+- `magpie.panels` 声明一个 `provider` 槽的面板（`panel/first-line.html`），它会出现在**每个 provider 编辑器**里：
+  一个 `mode` 下拉（off / blocked / always）+ 一个「首行文本」输入框，改完自动保存
+- 面板通过 `_magpie/bridge.js` 的 `magpie.options.get()/.set()` 读写**本插件自己的**选项 ——
+  与 JSON 编辑框改的是同一份 `firstLine`，两条路等价
+- `options.set` 是整份替换 + 一秒最多一次：写回时展开读到的整份 opts（不抹掉别的键），输入防抖 1.2s
+- 新增 `tests/panel-manifest.test.mjs`（4 项）：面板清单形状 / `files` 白名单里必须带面板文件（漏了就是一块空白）/
+  provider 槽必须走 bridge 且覆盖三档 / 写回必须保留别的键
+- 验收：测试 179 项中 175 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过；
+  `npm pack --dry-run` 里能看到 `panel/first-line.{html,js,css}`
+
+## 0.2.43 — 2026-11-17
+
+**新增（降级自查探针）+ 文档更正（降级落点不是固定值）**
+
+- `node scripts/probe-served-model.mjs`：绕开 magpie、用插件自己的 `llmHeaders()` 直连上游，
+  逐账号打印 `main-auto` / 防降级槽位的**实际服务模型**；有账号与声明不一致时退出码 2。
+  只读本机账号文件、不写任何配置，供应商关着也能跑（issue #43 的建议 3）
+- 文档更正：被改路由的号会落到**某个旧快照**，而旧快照的名字**不固定** ——
+  已知出现过 `deepseek-v4-flash-ga-260731`（#13）与 `deepseek-v4-flash-202605`（#43）。
+  #15 里把落点写成固定值的那句不再成立；判定只认响应体里的 `model`
+- 新增 `expectedServedModel()`：比之前先剥掉我们自己的 `-antidowngrade` 显示后缀 ——
+  第一版探针直接拿显示名比，把 4 个正常账号全判成「被降级」（实测踩到的坑，用用例锁住）
+- 新增 1 个用例；README 增加「你的号被降级了没有」一节
+- 验收：测试 175 项中 171 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过；
+  本机 4 账号 × 2 槽位实跑 8/8 与声明一致
+
+## 0.2.42 — 2026-11-17
+
+**新增（首行兜底开关：`firstLine.mode` / `firstLine.text`）**
+
+- 整句白名单只覆盖「已知客户端的默认首句」；用户改过的首句、新客户端、没见过的写法仍然 403。
+  新增插件选项（设置页里的 JSON）：`{"firstLine": {"mode": "blocked", "text": ""}}`
+  - `off`：只走白名单（等于 0.2.41 的行为）
+  - `blocked`（默认）：先按原样发；被 403「非法请求」拦下时，把 system 首行换成兜底句**重试一次**
+  - `always`：每个请求都把首行换成 `text`（优先级高于白名单，适合「提示词根本改不了」的客户端）
+- `text` 留空 = 内置兜底 `You are a helpful assistant.`（不含任何 agent 产品名，实测 200）；
+  选项写坏（未知 mode / 非字符串 / 整个 options 是坏 JSON）一律退回默认，绝不让请求失败
+- 重试**每次重新签 uskey** —— 它是一次性的，复用会直接撞风控，看起来像另一类故障
+- 只换 system 消息的**第一行**，第二行起原样；没有 system 消息就不重试（不凭空插一条）
+- 新增 5 个用例：默认 retry（两次都被拦仍给诊断）/ retry 成功直通 200 / off 不重试 /
+  always 直改且优先于白名单 / 选项写坏退回默认
+- 验收：测试 174 项中 170 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.41 — 2026-11-17
+
+**变更（身份句改写：正则形状匹配 → 整句白名单）**
+
+- 只对**主流客户端的默认首句**做整句替换（表里 11 条，逐条实测 403 → 200）；
+  **用户自己改过的首句一个字节都不动** —— 不跟用户的修改打架，也不可能被二次改写
+- 前缀稳定：同一客户端每次替换结果相同 ⇒ 上游前缀缓存照常命中。
+  正则那种「形状像就改」在用户微调首句后仍然改写，前缀反复变、缓存反复失效（本次要解决的问题之一）
+- 中文身份句实测原样就 200 ⇒ 从改写表移除（之前会做无谓的连字符替换，纯属让前缀变化）
+- 403 文案改口径：默认首句走白名单自动换；改过首句的请求不动，仍被拦就把 system 首行贴出来加一行
+- 新增 4 个用例：改过的首句不动 / 整句精确匹配（大小写、改词都不动）/ 句末标点归一 / 只替换第一句
+- 验收：测试 169 项中 165 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.40 — 2026-11-17
+
+**修复（Claude / Codex 的改写规则已经变成空转：产物照样 403）**
+
+- 2026-11-17 复测 0.2.32 起的连字符改写产物：`You are Claude-Code, …` /
+  `You are a coding agent running in the Codex-CLI, …` **仍然 403** —— 规则在跑，
+  改完上游照样拦，用户看到的现象和没装插件一样（issue #36 / #41 的表里都记着）
+- 上游认的是**第一句的形状**：`You are <产品名>` 当主语就拦，插字符不管用；**拆主语**才放行。
+  实测（同一分钟、只换 system 首行）：`You are a coding agent, running in the Codex CLI, …` → 200、
+  `You are an agent, Claude Code, …` → 200、`You are an agent, Claude-Code, …` → 200、
+  `You are an agent, Claude.` → 200
+- 改写改成「插一个逗号 + 泛指名词」：**名字一个字符都不删**，模型仍然知道自己是哪个客户端；
+  老形态（`Codex-CLI` / `Claude-Code` / 裸 `You are Claude.`）继续被救回来
+- 新增 2 个用例（老形态救回 / 幂等），改写产物与用例期望一起更新
+- 验收：测试 166 项中 162 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.39（fork 侧） — 2026-11-16
 
 **修复（0.2.38 的改写思路已失效：上游改成按「词对」判指纹）**
 
@@ -15,7 +210,21 @@
 - 验收：测试 182 项中 178 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过；
   网关实测 OpenCode / DSH / Codex / Claude 四种身份句首行全部 200
 
-## 0.2.38 — 2026-11-16
+## 0.2.39 — 2026-11-17
+
+**修复（ZCode 的身份句没被覆盖，整个客户端 403）**
+
+- 2026-11-17 实测（同一分钟、只换 system 首行）：`You are ZCode, …` / `You are ZCode.` → 403，
+  `You are Z-Code, …` → 200，`You are Zed, …` / `You are a helpful assistant.` → 200
+  —— 这条的判据仍是字面量 `ZCode`，插连字符有效（**与 0.2.38 那条 DSH 的结论不是一回事**，别混）
+- `IDENTITY_PHRASES` 补 `You are ZCode → You are Z-Code`，`IDENTITY_PHRASE_TEST` 同步补
+  `You are\s+ZCode\b`；ZCode 的系统提示词**不可配置**，插件不改写就等于这个客户端完全不能用（issue #38）
+- 403 文案改成「常见身份句插件已自动改写；仍被拦说明这句还没覆盖，把首行带到群里」——
+  原来只教 `powered by → running in`，对 ZCode 这类提示词改不动的客户端是空建议
+- 新增 4 个用例：长短两种 ZCode 写法改写 / 无关首句不误伤 / 已写成 `Z-Code` 不再动 / 诊断与改写同集合
+- 验收：测试 165 项中 161 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.38（fork 侧） — 2026-11-16
 
 **修复（OpenCode 2 的 system prompt 被上游当内容指纹，每轮 403）**
 
@@ -32,106 +241,17 @@
   显示名改成纯 ASCII：`deepseek-v4-flash-ga-260731 (pro-external slot)`，旧名继续归一
 - 验收：测试 182 项中 178 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
 
-## 0.2.28 — 2026-11-15
+## 0.2.38 — 2026-11-16
 
-**并入上游 0.2.23 / 0.2.24（选择性），并修正其中的一处错误结论**
+**修复（连字符形态失效，改成换句式；报错文案写明根因与修法）**
 
-- 并入上游「粘贴回调地址登录」（贡献者 @Yandre97，上游 PR #9）：新增「QQ 登录（粘贴回调地址）」
-  「微信登录（粘贴回调地址）」两条路 —— 授权页交给你自己的浏览器，登录完把地址栏那条
-  `…marvis_oauth?…&code=…&state=…` 粘回来即可。扫码页打不开（端口没映射 / 防火墙）时的兜底
-- 并入上游的**旧显示名归一**机制（`LEGACY_DISPLAY_ALIASES`）：显示名改过之后，用户路由组里
-  写的旧名字仍能归一成槽位，不会被原样发给上游变成 `400 无效模型id`
-- ⚠ **不采纳**上游把 `deepseek-v4-pro-external` 改名成 `deepseek-v4-1-flash-261017 (防降级)`：
-  2026-11-15 用两个 QQ 账号实测，该槽位回的是 `deepseek-v4-flash-ga-260731`（且不带推理），
-  不是 4.1f。它的显示名改成本 fork 实测到的真实值 `deepseek-v4-flash-ga-260731 (pro-external slot)`，
-  免得又出现「名字写 A、实际跑 B」——那正是 magpie 那条「很可能换成了别的模型」警告的来源
-- 该槽位的两个旧名（`deepseek-v4-pro-202606`、`deepseek-v4-1-flash-261017 (防降级)`）都保留归一映射
-- 并入上游尚未发布的「图片输入归一」分支（issue #8 后续）：图片 http(s) URL / 裸 base64 /
-  Anthropic `{type:"image",source}` 三种输入统一转成 Marvis 要的 `data:image/...;base64`，
-  转不了就本地 400（`invalid_image`）—— 之前只有 `vision: true` 声明，URL 形式的附件会原样丢给上游
-- 该分支的 SSRF 预检（私网 / 本机 / link-local / CGNAT 一律拦）默认保留，另加开关
-  `MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS=1` 放行局域网图片地址 —— 附件就在 NAS 上时不然传不上去
-- 上游到 0.2.24 仍未修 `Marvis-Scene`（claude / gpt 三个模型在他们那儿依旧 4130001），本 fork 的 0.2.27 已修
-
-## 0.2.27 — 2026-11-11
-
-**修复：claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4 三个模型永远回「该模型在当前账号不可用」**
-
-根因不是模型下线，是 `Marvis-Scene` 请求头 —— 它是上游的**准入闸门**，不是随便填的元数据：
-
-| Marvis-Scene | deepseek / hunyuan | claude / gpt |
-| --- | --- | --- |
-| `preload_summary`（插件原来用的） | 200 | **400 `4130001 无效模型id`** |
-| `chat` | 200 | 200 |
-
-同一个 model id、同一个账号、同一秒，只换场景就从 400 变 200。看起来像「模型不存在」，
-其实是场景不放行 —— 上游把两种情况用了同一个错误码，特别容易查错方向。
-现在固定发 `scene: "chat"`（这才是补全请求该有的场景），8 个槽位全部 200。
-
-- `src/hooks/loader.mjs`：`Marvis-Scene` 改成 `chat`、`Marvis-AgentTag` 改成 `main_agent`
-- `src/marvis/protocol.mjs`：`llmHeaders` 的默认 scene 同步改成 `chat`
-- 4130001 的报错文案补一句「（模型 id 无效，或当前场景/账号不放行）」，
-  别一口咬定是模型下线
-- 新增回归测试：断言 loader 发出去的 `Marvis-Scene` 必须是 `chat`
-
-附带验证（真账号直连上游）：8 个槽位全部 200；stream / tools / vision 都通
-（`claude-sonnet-4-6` 识图答「红色」，`main-auto` 不再被入口 400 拦掉）。
-## 0.2.26 — 2026-11-11
-
-**修复 QQ 扫码后卡在「请在浏览器中完成腾讯 Marvis 登录」** —— 三个连环坑，都在 `src/marvis/relay.mjs`：
-
-- `ptuiCB('67', …, '二维码认证中。')` 是「已扫、手机正在确认」，以前被当成「已过期」，
-  于是插件立刻换了一张二维码 —— 手机确认的是旧那张，新那张永远没人扫，就卡死了。
-  现在 67 只更新页面状态，继续轮询同一张码
-- 扫码成功后腾讯还有一页「确认授权」（`graph.qq.com/oauth2.0/show`），那一步是页面 JS 干的
-  （`qlogin_v2.js` 里的 `formSend()`）。插件不跑 JS，所以停在这一页。
-  现在照它的实现自己发一次 `POST graph.qq.com/oauth2.0/authorize`
-  （`openapi=1010`、`g_tk=hash(p_skey)`、`from_ptlogin=1`…），一次就过
-- 腾讯会给同一个 cookie 名下发多条（不同 Domain），其中一条是空值的「删除」。
-  我们的 cookie 罐子不分 Domain，空值把 `p_skey` 盖成了空串，
-  `g_tk` 于是算成 5381，被当成 CSRF 又跳回授权页。现在空值不覆盖已有值
-- 轮询的 800ms 间隔计时器以前 `unref()` 了：宿主进程此刻没别的活时事件循环会空掉，
-  Node 直接退出。现在不 unref
-
-实测：手机 QQ 扫码 → 确认 → 拿到 code → `exchangeCode` 成功（openid 5709482C…）。
-## 0.2.25 — 2026-11-11
-
-- 修复**取消登录后再点一次，报「端口 18080 被占用」**：`close()` 以前只调 `server.close()`，
-  它只停止接受新连接，浏览器那条 keep-alive 连接（页面每 1.2 秒轮询 `/status`）还挂着，
-  端口就一直没放。现在关服务时把已建立的 socket 全部 destroy 掉
-- 用户点「取消」时立刻收摊：监听宿主 abort 的 signal，不再等 5 分钟超时
-- 上一次扫码页没关干净时，下一次登录**先关旧的再绑端口**，并自动重试几次
-- 端口真被别的程序占着时，报「扫码页的端口 18080 被占用了…」而不是底层的
-  `Failed to start server. Is port 18080 in use?`
-
-## 0.2.24 — 2026-11-11
-
-- 扫码页启动时**自查对外地址**：访问不通或返回非 200 就在 `docker logs` 里打印告警，
-  并在 `/status` 的 `reach` 字段里带上结果 —— 端口映射写错时不再毫无线索
-- 登录说明里写清「扫码页端口 ≠ magpie 端口」，并给出 `curl -I` 验证方法
-- README 新增「打开扫码页是 404 / 401 / 要求登录 magpie？」排障小节
-
-## 0.2.23 — 2026-11-11
-
-**修复（NAS / 无浏览器环境登录）+ 两处旧 bug**
-
-- 新增**局域网扫码登录**（`src/marvis/relay.mjs`）：插件在本机临时起一个网页，用户用自己的
-- 容器（Docker / 飞牛 / 群晖）里登录：新增 `MAGPIE_MARVIS_RELAY_PORT` / `MAGPIE_MARVIS_RELAY_URL`，
-  固定监听端口并把「外面该打开哪个地址」交给用户指定 —— 否则容器里探测到的是 `172.17.x`，局域网打不开
-  浏览器打开、手机扫码；二维码的 uuid/qrsig 由插件在服务端申请并长轮询，浏览器全程不碰回调地址。
-  跑 magpie 的机器**不需要**任何浏览器 —— NAS / Docker / 群晖 / 飞牛 都能登录
-- 本机找不到 Chromium 时，「QQ 登录」「微信登录」自动改走扫码路，不再报「请装一个浏览器」
-- 新增两个显式方法「微信扫码登录（手机扫，NAS / 远程推荐）」「QQ 扫码登录（手机扫，NAS / 远程推荐）」，
-  远程访问 magpie（桌面窗口开在服务器上、用户看不见）时手选这两条
-- `main-auto` 补上 `vision: true`：之前漏了它，magpie 在入口就把带图请求 400 掉，
-  上游其实能识图（issue #8）
-- `usage` 的诊断文件改用顶层 `import`：原来在 ESM 里写 `require("node:fs")`，
-  ReferenceError 被 catch 吞掉，`~/.cache/magpie/marvis-wallet-error.json` 从来没写出来过
-- 验收：全量 124 项中 120 通过、4 项因未注入 live 凭据跳过；`check.mjs` 42 项全过；
-  微信 / QQ 二维码通道对真实上游实测（页面 200、二维码 46KB JPEG / 442B PNG、状态 waiting）
-
-> 每个版本一节，**一条一行**，说用户能感知的变化。
-> 格式与规矩见 [UPDATING.md](./UPDATING.md)。
+- 2026-11-16 实测：`DeepSeek-Harness` / `Claude-Code` 这些**连字符形态也被拦了** ——
+  上游把判据从「词对之间插字符就不认」收紧成「`You are an AI agent` + `DeepSeek`」，插字符不再管用
+- 改写改成**换句式**：`powered by` → `running in`（等长、语义不变），
+  `You are an AI agent running in DeepSeek Harness.` 实测 200；倒装/`inside` 也放行
+- 报错文案写明**根因与修法**：「系统提示词首句被当成身份指纹（不是密钥或登录问题）」+ 具体改法
+  + QQ 群 451129479，让用户那边的 agent 看了报错就能自己动手修
+- 验收：测试 162 项中 158 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
 
 ## 0.2.37 — 2026-11-16
 
@@ -237,6 +357,27 @@
 
 ## 0.2.28 — 2026-11-15
 
+**并入上游 0.2.23 / 0.2.24（选择性），并修正其中的一处错误结论**
+
+- 并入上游「粘贴回调地址登录」（贡献者 @Yandre97，上游 PR #9）：新增「QQ 登录（粘贴回调地址）」
+  「微信登录（粘贴回调地址）」两条路 —— 授权页交给你自己的浏览器，登录完把地址栏那条
+  `…marvis_oauth?…&code=…&state=…` 粘回来即可。扫码页打不开（端口没映射 / 防火墙）时的兜底
+- 并入上游的**旧显示名归一**机制（`LEGACY_DISPLAY_ALIASES`）：显示名改过之后，用户路由组里
+  写的旧名字仍能归一成槽位，不会被原样发给上游变成 `400 无效模型id`
+- ⚠ **不采纳**上游把 `deepseek-v4-pro-external` 改名成 `deepseek-v4-1-flash-261017 (防降级)`：
+  2026-11-15 用两个 QQ 账号实测，该槽位回的是 `deepseek-v4-flash-ga-260731`（且不带推理），
+  不是 4.1f。它的显示名改成本 fork 实测到的真实值 `deepseek-v4-flash-ga-260731 (pro-external slot)`，
+  免得又出现「名字写 A、实际跑 B」——那正是 magpie 那条「很可能换成了别的模型」警告的来源
+- 该槽位的两个旧名（`deepseek-v4-pro-202606`、`deepseek-v4-1-flash-261017 (防降级)`）都保留归一映射
+- 并入上游尚未发布的「图片输入归一」分支（issue #8 后续）：图片 http(s) URL / 裸 base64 /
+  Anthropic `{type:"image",source}` 三种输入统一转成 Marvis 要的 `data:image/...;base64`，
+  转不了就本地 400（`invalid_image`）—— 之前只有 `vision: true` 声明，URL 形式的附件会原样丢给上游
+- 该分支的 SSRF 预检（私网 / 本机 / link-local / CGNAT 一律拦）默认保留，另加开关
+  `MAGPIE_MARVIS_ALLOW_PRIVATE_IMAGE_HOSTS=1` 放行局域网图片地址 —— 附件就在 NAS 上时不然传不上去
+- 上游到 0.2.24 仍未修 `Marvis-Scene`（claude / gpt 三个模型在他们那儿依旧 4130001），本 fork 的 0.2.27 已修
+
+## 0.2.28 — 2026-11-15
+
 **修复（403「非法请求」时给出能指路的错误，而不是让宿主显示「API 密钥无效」）**
 
 - 触发条件：上游 403 + 请求体里含 `You are an AI agent powered by DeepSeek Harness.`。
@@ -245,6 +386,30 @@
   **不拦请求、不改 prompt** —— 只把错误文案从误导改成可执行
 - 没命中标识句的 403 仍然原样透出，不误判
 - 验收：测试 146 项中 142 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.27 — 2026-11-11
+
+**修复：claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4 三个模型永远回「该模型在当前账号不可用」**
+
+根因不是模型下线，是 `Marvis-Scene` 请求头 —— 它是上游的**准入闸门**，不是随便填的元数据：
+
+| Marvis-Scene | deepseek / hunyuan | claude / gpt |
+| --- | --- | --- |
+| `preload_summary`（插件原来用的） | 200 | **400 `4130001 无效模型id`** |
+| `chat` | 200 | 200 |
+
+同一个 model id、同一个账号、同一秒，只换场景就从 400 变 200。看起来像「模型不存在」，
+其实是场景不放行 —— 上游把两种情况用了同一个错误码，特别容易查错方向。
+现在固定发 `scene: "chat"`（这才是补全请求该有的场景），8 个槽位全部 200。
+
+- `src/hooks/loader.mjs`：`Marvis-Scene` 改成 `chat`、`Marvis-AgentTag` 改成 `main_agent`
+- `src/marvis/protocol.mjs`：`llmHeaders` 的默认 scene 同步改成 `chat`
+- 4130001 的报错文案补一句「（模型 id 无效，或当前场景/账号不放行）」，
+  别一口咬定是模型下线
+- 新增回归测试：断言 loader 发出去的 `Marvis-Scene` 必须是 `chat`
+
+附带验证（真账号直连上游）：8 个槽位全部 200；stream / tools / vision 都通
+（`claude-sonnet-4-6` 识图答「红色」，`main-auto` 不再被入口 400 拦掉）。
 
 ## 0.2.27 — 2026-11-15
 
@@ -256,6 +421,25 @@
   （排序是 magpie 按剩余额度算的，插件给不了优先级）
 - 验收：测试 144 项中 140 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
 
+## 0.2.26 — 2026-11-11
+
+**修复 QQ 扫码后卡在「请在浏览器中完成腾讯 Marvis 登录」** —— 三个连环坑，都在 `src/marvis/relay.mjs`：
+
+- `ptuiCB('67', …, '二维码认证中。')` 是「已扫、手机正在确认」，以前被当成「已过期」，
+  于是插件立刻换了一张二维码 —— 手机确认的是旧那张，新那张永远没人扫，就卡死了。
+  现在 67 只更新页面状态，继续轮询同一张码
+- 扫码成功后腾讯还有一页「确认授权」（`graph.qq.com/oauth2.0/show`），那一步是页面 JS 干的
+  （`qlogin_v2.js` 里的 `formSend()`）。插件不跑 JS，所以停在这一页。
+  现在照它的实现自己发一次 `POST graph.qq.com/oauth2.0/authorize`
+  （`openapi=1010`、`g_tk=hash(p_skey)`、`from_ptlogin=1`…），一次就过
+- 腾讯会给同一个 cookie 名下发多条（不同 Domain），其中一条是空值的「删除」。
+  我们的 cookie 罐子不分 Domain，空值把 `p_skey` 盖成了空串，
+  `g_tk` 于是算成 5381，被当成 CSRF 又跳回授权页。现在空值不覆盖已有值
+- 轮询的 800ms 间隔计时器以前 `unref()` 了：宿主进程此刻没别的活时事件循环会空掉，
+  Node 直接退出。现在不 unref
+
+实测：手机 QQ 扫码 → 确认 → 拿到 code → `exchangeCode` 成功（openid 5709482C…）。
+
 ## 0.2.26 — 2026-11-15
 
 **修复（`main-auto` 被声明成不收图，贴图直接 400）**
@@ -266,6 +450,16 @@
   data URI、Anthropic `image/source` 显式转换 —— 转不了时本地 400，不再静默丢图
 - README 的模型清单去掉已不存在的「DeepSeek V4 Pro」，并注明两条 V4.1 Flash 路由都能识图
 - 验收：测试 143 项中 139 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
+
+## 0.2.25 — 2026-11-11
+
+- 修复**取消登录后再点一次，报「端口 18080 被占用」**：`close()` 以前只调 `server.close()`，
+  它只停止接受新连接，浏览器那条 keep-alive 连接（页面每 1.2 秒轮询 `/status`）还挂着，
+  端口就一直没放。现在关服务时把已建立的 socket 全部 destroy 掉
+- 用户点「取消」时立刻收摊：监听宿主 abort 的 signal，不再等 5 分钟超时
+- 上一次扫码页没关干净时，下一次登录**先关旧的再绑端口**，并自动重试几次
+- 端口真被别的程序占着时，报「扫码页的端口 18080 被占用了…」而不是底层的
+  `Failed to start server. Is port 18080 in use?`
 
 ## 0.2.25 — 2026-11-15
 
@@ -279,8 +473,36 @@
 - 新增回归测试：**所有模型的显示名必须是纯 ASCII** —— 防止再有人给它加中文后缀
 - 验收：测试 128 项中 124 通过、4 项因未注入 live 凭据跳过；合规检查 42 项全过
 
+## 0.2.24 — 2026-11-11
+
+- 扫码页启动时**自查对外地址**：访问不通或返回非 200 就在 `docker logs` 里打印告警，
+  并在 `/status` 的 `reach` 字段里带上结果 —— 端口映射写错时不再毫无线索
+- 登录说明里写清「扫码页端口 ≠ magpie 端口」，并给出 `curl -I` 验证方法
+- README 新增「打开扫码页是 404 / 401 / 要求登录 magpie？」排障小节
+
 ## 0.2.24 — 2026-11-13
 
+## 0.2.23 — 2026-11-11
+
+**修复（NAS / 无浏览器环境登录）+ 两处旧 bug**
+
+- 新增**局域网扫码登录**（`src/marvis/relay.mjs`）：插件在本机临时起一个网页，用户用自己的
+- 容器（Docker / 飞牛 / 群晖）里登录：新增 `MAGPIE_MARVIS_RELAY_PORT` / `MAGPIE_MARVIS_RELAY_URL`，
+  固定监听端口并把「外面该打开哪个地址」交给用户指定 —— 否则容器里探测到的是 `172.17.x`，局域网打不开
+  浏览器打开、手机扫码；二维码的 uuid/qrsig 由插件在服务端申请并长轮询，浏览器全程不碰回调地址。
+  跑 magpie 的机器**不需要**任何浏览器 —— NAS / Docker / 群晖 / 飞牛 都能登录
+- 本机找不到 Chromium 时，「QQ 登录」「微信登录」自动改走扫码路，不再报「请装一个浏览器」
+- 新增两个显式方法「微信扫码登录（手机扫，NAS / 远程推荐）」「QQ 扫码登录（手机扫，NAS / 远程推荐）」，
+  远程访问 magpie（桌面窗口开在服务器上、用户看不见）时手选这两条
+- `main-auto` 补上 `vision: true`：之前漏了它，magpie 在入口就把带图请求 400 掉，
+  上游其实能识图（issue #8）
+- `usage` 的诊断文件改用顶层 `import`：原来在 ESM 里写 `require("node:fs")`，
+  ReferenceError 被 catch 吞掉，`~/.cache/magpie/marvis-wallet-error.json` 从来没写出来过
+- 验收：全量 124 项中 120 通过、4 项因未注入 live 凭据跳过；`check.mjs` 42 项全过；
+  微信 / QQ 二维码通道对真实上游实测（页面 200、二维码 46KB JPEG / 442B PNG、状态 waiting）
+
+> 每个版本一节，**一条一行**，说用户能感知的变化。
+> 格式与规矩见 [UPDATING.md](./UPDATING.md)。
 
 ## 0.2.22 — 2026-11-08
 
@@ -565,4 +787,3 @@
   现在优先从**同一段内存**里取 `guid=`
 - 去掉 `--disable-blink-features=AutomationControlled`（Edge 会弹「不受支持的命令行标记」警告条），
   改用 CDP `Page.addScriptToEvaluateOnNewDocument` 抹掉 `navigator.webdriver`
-

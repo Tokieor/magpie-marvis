@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>首行文本 · 腾讯 Marvis TENCENT</title>
+<link rel="stylesheet" href="first-line.css">
+<script src="_magpie/bridge.js"></script>
+<script src="first-line.js" defer></script>
+</head>
+<body>
+
+<!-- 一行：标签 · 当前值 · 「设置…」按钮。点按钮才弹出输入框，面板本身不占高度。 -->
+<section class="fl">
+  <div class="fl-row">
+    <span class="fl-label" id="label">首行文本</span>
+    <span class="fl-value" id="value">—</span>
+    <button id="open" class="fl-btn" type="button">设置…</button>
+  </div>
+  <p class="fl-status" id="saved" role="status" aria-live="polite"></p>
+
+  <dialog id="dlg" class="fl-dialog">
+    <form id="form" method="dialog" class="fl-form">
+      <h2 id="title">首行文本</h2>
+      <p class="muted" id="hint">
+        「每个请求都改写首行」打开时，system 提示词的第一行会换成下面这句。留空 = 内置兜底句。
+      </p>
+      <input id="text" type="text" spellcheck="false" autocomplete="off">
+      <p class="muted" id="fallback-note"></p>
+      <div class="fl-actions">
+        <button id="cancel" class="fl-btn" type="submit" value="cancel">取消</button>
+        <button id="save" class="fl-btn fl-primary" type="submit" value="save">保存</button>
+      </div>
+    </form>
+  </dialog>
+</section>
+</body>
+</html>

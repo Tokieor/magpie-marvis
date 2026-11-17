@@ -110,12 +110,19 @@ const TABLE = [
   //   用户看到的是「deepseek flash 用不了图片」——而上游其实 200。
   //   `efforts` 来自上游 0.2.31：这个槽位支持 low/high/max 三档推理强度。
   ["main-auto", "deepseek-v4-1-flash-261017", 1_000_000, { reasoning: true, tools: true, vision: true, efforts: ["low", "high", "max"] }],
-  // ⚠ 显示名跟**实测**走，不跟名字暗示走：2026-11-15/16 两个 QQ 账号实测，该槽位回的是
-  //   `deepseek-v4-flash-ga-260731`（且**不带推理**），不是 pro。
-  //   上游 0.2.23 起把它写成 `deepseek-v4-1-flash-261017 (防降级)` / `-antidowngrade`，
-  //   理由是「固定映射能拿到 4.1f」——这个结论在我们的账号上不成立，照抄会把显示名写成 A、
-  //   实际跑 B，正是「模型对不上」警告的来源。后缀留着，是为了和 `hy3-preview-agent`（同样回 260731）区分。
-  ["deepseek-v4-pro-external", "deepseek-v4-flash-ga-260731 (pro-external slot)", 1_000_000, { reasoning: true, tools: true, vision: true, efforts: ["low", "high", "max"] }],
+  // ⚠ 显示名跟**实测**走，不跟名字暗示走：2026-11-15 / 11-16 / 11-17 三轮、三个 QQ 账号实测，
+  //   该槽位回的一直是 `deepseek-v4-flash-ga-260731`（且**不带推理**），不是 pro，也不是 4.1f。
+  //   上游 0.2.23 起把它写成 `deepseek-v4-1-flash-261017 (防降级)` / `-antidowngrade`，理由是
+  //   「固定映射能拿到 4.1f」——**这个结论在我们的账号上不成立**（2026-11-17 复测仍然如此），
+  //   照抄会把显示名写成 A、实际跑 B，正是 magpie「很可能换成了别的模型」那条警告的来源。
+  //
+  //   ⚠ 后缀与 hy3-preview-agent（同样回 260731）区分开，且必须**纯 ASCII、不带空格与括号**
+  //     （issue #15：显示名会被客户端拿去做 header / URL，非 ASCII 与空格会让 VS Code Copilot
+  //     卡在回复阶段）。所以用连字符拼的 `-proexternal`，不用 ` (pro-external slot)`。
+  //
+  //   ⚠ 被改路由的号落到的旧快照名字**不固定**（已知 260731 / 202605，issue #43）——
+  //     所以这里只是「本机实测值」，不是「上游承诺值」。自查用 `node scripts/probe-served-model.mjs`。
+  ["deepseek-v4-pro-external", "deepseek-v4-flash-ga-260731-proexternal", 1_000_000, { reasoning: true, tools: true, vision: true, efforts: ["low", "high", "max"] }],
   ["hy3-preview-agent", "deepseek-v4-flash-ga-260731", 1_000_000, { reasoning: true, tools: true }],
 
   // ── 其他厂商 ─────────────────────────────────────────────────
@@ -140,6 +147,77 @@ export const MODEL_ALIASES = Object.freeze(
   Object.fromEntries(TABLE.map(([id], index) => [String(index), id])),
 )
 
+/**
+ * provider 卡片里的开关（magpie 的 `auth.options`，#2038）。
+ *
+ * magpie 把每条渲染成一行 Off/On 开关，放在供应商编辑器里（和账号、路由、模型同一张卡），
+ * 用户点一下立刻保存；插件用 `input.magpie.option("marvis", key)` 读，
+ * **改完不用重启、下一个请求就生效**。
+ *
+ * 位置：条目上写 `placement: "top"` 就会被画在**账号下面、路由上面**（magpie #5269）；
+ * 不写（或写别的）则排在模型之后、高级折叠之前。我们两条都放 top —— 这两个开关是这张卡上
+ * 唯一需要用户先看的设置，排在路由/模型之后基本等于找不到。
+ *
+ * 字段约束（magpie 侧强校验，写错就整条被丢）：`key` 必须 `[a-z0-9_-]{1,40}` 且唯一；
+ * `label` ≤60 字符；`description` ≤300；`labels` / `descriptions` / `confirms` 是多语言版本
+ * （`{"zh": "…"}`），`label` 本身必须留着，老版本 magpie 只读它。最多 16 条。
+ *
+ * ⚠ **这里不写 `description`**：magpie 的 `.plugin-options`（`plugin-options` 是
+ * `display:flex` 的 `.stack`）只给每个选项留了一行的高度，多出来的那行会**压在下一个 field
+ * （模型列表）上**（0.2.47 / 0.2.48 实测，两张截图）。插件的渲染自己改不了，能改的只有
+ * 「让每条只占一行」—— 所以说明写进 `label`（≤60 字符），`description` 一律留空。
+ */
+/**
+ * 插件选项里的那个键：**就是给用户看的字段名**，所以用中文。
+ *
+ * 设置 → 插件 → 本插件那一行的「选项」框里，用户看到的就是
+ * `{ "提示词首行替换": "You are a helpful assistant." }`。
+ * 键名是我们自己定的（magpie 只要求值是一个对象），随时能改；改成中文以后
+ * 不用猜 `text` 是什么意思。老版本存过的 `text` / `firstLine.text` 仍然读。
+ */
+export const FIRST_LINE_OPTION_KEY = "提示词首行替换"
+
+export const PLUGIN_OPTIONS = Object.freeze([
+  Object.freeze({
+    key: "first_line_fallback",
+    label: "Rewrite the first line when the upstream refuses it (403)",
+    labels: {
+      zh: "被上游拒绝时改写首行：内容过滤拦下（403）时把 system 首行换成兜底句重发一次",
+      "zh-TW": "被上游拒絕時改寫首行：內容過濾攔下（403）時把 system 首行換成兜底句重發一次",
+    },
+    default: true,
+    placement: "top",
+  }),
+  Object.freeze({
+    key: "first_line_always",
+    label: "Rewrite the first line of every request",
+    labels: { zh: "每个请求都改写首行：把 system 首行换成设置 → 插件里本插件「选项」那句，留空用兜底句" },
+    default: false,
+    placement: "top",
+    confirm: "Every request will have its system prompt's first line replaced, including the ones that would work as they are.",
+    confirms: {
+      zh: "之后每个请求的 system 首行都会被换掉，包括本来能正常通过的那些。",
+    },
+  }),
+])
+
+/**
+ * 槽位「应该」服务哪个上游模型名 —— 自查探针与测试共用。
+ *
+ * ⚠ 不能直接拿 `DISPLAY_BY_SLOT` 比：显示名里有**我们加的后缀**
+ *   （`deepseek-v4-1-flash-261017-antidowngrade`），而上游回的 model 一直是
+ *   `deepseek-v4-1-flash-261017`。后缀只是 UI 标记，剥掉才是上游名字。
+ *
+ * @param {string} slot
+ * @returns {string}
+ */
+export const OURS_DISPLAY_SUFFIX = "-proexternal"
+
+export function expectedServedModel(slot) {
+  const display = DISPLAY_BY_SLOT[slot] ?? slot
+  return display.endsWith(OURS_DISPLAY_SUFFIX) ? display.slice(0, -OURS_DISPLAY_SUFFIX.length) : display
+}
+
 /** 槽位名 → 卡片/路由上显示的真实模型名 */
 export const DISPLAY_BY_SLOT = Object.freeze(
   Object.fromEntries(TABLE.map(([slot, name]) => [slot, name])),
@@ -163,7 +241,9 @@ const LEGACY_DISPLAY_ALIASES = Object.freeze({
   // 0.2.23 / 0.2.24 用过的带中文后缀的显示名，以及上游 0.2.25+ 的 ASCII 名 ——
   // 已经写好它们的路由组不能因此 400。
   "deepseek-v4-1-flash-261017-antidowngrade": "deepseek-v4-pro-external",
-  // 本 fork 0.2.28 用过的中文后缀名（非 ASCII 会让 Copilot 卡住，见 issue #15）
+  // 本 fork 用过的两种后缀名：0.2.28 的带空格 ASCII 版、0.2.28 前的中文版
+  // （带空格 / 非 ASCII 会让 Copilot 卡住，见 issue #15，故都收进归一表）
+  "deepseek-v4-flash-ga-260731 (pro-external slot)": "deepseek-v4-pro-external",
   "deepseek-v4-flash-ga-260731 (pro-external 槽位)": "deepseek-v4-pro-external",
   "deepseek-v4-1-flash-261017 (防降级)": "deepseek-v4-pro-external",
 })
